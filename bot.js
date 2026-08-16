@@ -122,6 +122,33 @@ const spamTracker = new Map(); // { 'groupJid:senderJid': { count, firstMsgTime,
 const SPAM_THRESHOLD = 8; // messages within time window
 const SPAM_WINDOW = 5000; // 5 seconds
 
+// ============================================
+// 🤖 ANTI-BOT SYSTEM
+// ============================================
+
+// AntiBot enabled per group
+const antiBotGroups = {}; // { groupJid: true/false }
+
+// Commands/signatures treated as confirmed bot commands
+const antiBotSignatures = [
+  "vv",
+  "hidetag",
+  "tagall",
+  "menu"
+];
+
+// Legitimate commands that AntiBot must never flag
+const antiBotWhitelist = [
+  "rank",
+  "top",
+  "level",
+  "exp",
+  "expleaderboard"
+];
+
+// AntiBot violation tracking
+const antiBotWarnings = {}; // { groupJid: { userJid: count } }
+
 // Anti-Delete System
 let antiDeleteEnabled = false; // Global toggle for anti-delete
 const messageCache = new Map(); // Cache messages for anti-delete { messageId: messageData }
@@ -225,6 +252,20 @@ if (data.nightModeGroups && Array.isArray(data.nightModeGroups)) {
         Object.assign(antiSpamGroups, data.antiSpamGroups);
       }
 
+      // Load AntiBot settings
+      if (data.antiBotGroups) {
+        Object.assign(antiBotGroups, data.antiBotGroups);
+      }
+
+      if (Array.isArray(data.antiBotSignatures) && data.antiBotSignatures.length) {
+        antiBotSignatures.length = 0;
+        antiBotSignatures.push(...data.antiBotSignatures);
+      }
+
+      if (data.antiBotWarnings) {
+        Object.assign(antiBotWarnings, data.antiBotWarnings);
+      }
+
       // Load anti-delete setting
       if (data.antiDeleteEnabled !== undefined) {
         antiDeleteEnabled = data.antiDeleteEnabled;
@@ -309,6 +350,9 @@ const saveData = () => {
       antiStatusGroups,
       antiTagGroups,
       antiSpamGroups,
+      antiBotGroups,
+      antiBotSignatures,
+      antiBotWarnings,
       antiDeleteEnabled,
       groupActivity,
       activityTracking,
@@ -323,6 +367,176 @@ const saveData = () => {
     logger.error({ error: error.message }, 'Error saving bot data');
   }
 };
+
+// ============================================
+// ☁️ GROUP SETTINGS — SUPABASE BACKUP
+// ============================================
+
+// Save all persistent group settings to Supabase.
+// Each group is stored separately by its JID.
+const saveGroupSettingsToSupabase = async (groupJid) => {
+  try {
+    const settings = {
+      customWelcomeMessage: customWelcomeMessages[groupJid] ?? null,
+      customGoodbyeMessage: customGoodbyeMessages[groupJid] ?? null,
+      welcomeEnabled: welcomeEnabled[groupJid] ?? false,
+      goodbyeEnabled: goodbyeEnabled[groupJid] ?? false,
+
+      antiMention: antiMentionGroups[groupJid] ?? false,
+      antiPhoto: antiPhotoGroups[groupJid] ?? false,
+      antiStatus: antiStatusGroups[groupJid] ?? false,
+      antiTag: antiTagGroups[groupJid] ?? false,
+      antiSpam: antiSpamGroups[groupJid] ?? false,
+
+      antiBot: antiBotGroups[groupJid] ?? false,
+      antiBotSignatures: [...antiBotSignatures],
+
+      nightMode: nightModeGroups.includes(groupJid),
+
+      activityTracking: activityTracking[groupJid] ?? false,
+      expEnabled: expEnabled[groupJid] ?? false
+    };
+
+    const { error } = await supabase
+      .from("bot_group_settings")
+      .upsert({
+        group_jid: groupJid,
+        settings,
+        updated_at: new Date().toISOString()
+      }, {
+        onConflict: "group_jid"
+      });
+
+    if (error) throw error;
+
+    logger.debug(
+      { groupId: groupJid },
+      "Group settings backed up to Supabase"
+    );
+  } catch (error) {
+    logger.error(
+      {
+        groupId: groupJid,
+        error: error.message
+      },
+      "Failed to backup group settings to Supabase"
+    );
+  }
+};
+
+// Load all persistent group settings from Supabase.
+const loadGroupSettingsFromSupabase = async () => {
+  try {
+    const { data, error } = await supabase
+      .from("bot_group_settings")
+      .select("group_jid, settings");
+
+    if (error) throw error;
+
+    for (const row of data || []) {
+      const groupId = row.group_jid;
+      const settings = row.settings || {};
+
+      if (settings.customWelcomeMessage !== null &&
+          settings.customWelcomeMessage !== undefined) {
+        customWelcomeMessages[groupId] =
+          settings.customWelcomeMessage;
+      }
+
+      if (settings.customGoodbyeMessage !== null &&
+          settings.customGoodbyeMessage !== undefined) {
+        customGoodbyeMessages[groupId] =
+          settings.customGoodbyeMessage;
+      }
+
+      welcomeEnabled[groupId] =
+        Boolean(settings.welcomeEnabled);
+
+      goodbyeEnabled[groupId] =
+        Boolean(settings.goodbyeEnabled);
+
+      antiMentionGroups[groupId] =
+        settings.antiMention || false;
+
+      antiPhotoGroups[groupId] =
+        settings.antiPhoto || false;
+
+      antiStatusGroups[groupId] =
+        settings.antiStatus || false;
+
+      antiTagGroups[groupId] =
+        settings.antiTag || false;
+
+      antiSpamGroups[groupId] =
+        settings.antiSpam || false;
+
+      antiBotGroups[groupId] =
+        Boolean(settings.antiBot);
+
+      activityTracking[groupId] =
+        Boolean(settings.activityTracking);
+
+      expEnabled[groupId] =
+        Boolean(settings.expEnabled);
+
+      if (settings.nightMode && !nightModeGroups.includes(groupId)) {
+        nightModeGroups.push(groupId);
+      }
+    }
+
+    // Restore the globally managed AntiBot signatures.
+    const signatureSets = (data || [])
+      .map(row => row.settings?.antiBotSignatures)
+      .filter(Array.isArray);
+
+    if (signatureSets.length > 0) {
+      const mergedSignatures = [
+        ...new Set(
+          signatureSets
+            .flat()
+            .map(x => String(x).toLowerCase().trim())
+            .filter(Boolean)
+        )
+      ];
+
+      if (mergedSignatures.length > 0) {
+        antiBotSignatures.length = 0;
+        antiBotSignatures.push(...mergedSignatures);
+      }
+    }
+
+    logger.info(
+      { groups: (data || []).length },
+      "Group settings loaded from Supabase"
+    );
+  } catch (error) {
+    logger.error(
+      { error: error.message },
+      "Failed to load group settings from Supabase"
+    );
+  }
+};
+
+// ============================================
+// ☁️ PERSISTENT GROUP SETTINGS SAVE HELPER
+// ============================================
+// Saves the local JSON backup AND the Supabase
+// backup whenever a group setting is changed.
+const savePersistentGroupSettings = async (groupJid) => {
+  try {
+    saveData();
+    await saveGroupSettingsToSupabase(groupJid);
+  } catch (error) {
+    logger.error(
+      {
+        groupId: groupJid,
+        error: error.message
+      },
+      "Failed to save persistent group settings"
+    );
+  }
+};
+
 const saveExpToSupabase = async (groupJid, userJid, userData) => {
   try {
     const { error } = await supabase
@@ -1775,6 +1989,11 @@ const getMenu = () => `
 async function startBot() {
   // Load saved data on startup
   loadData();
+
+  // ☁️ Restore persistent group settings from Supabase
+  await loadGroupSettingsFromSupabase();
+
+  // ☁️ Restore EXP data from Supabase
   await loadExpFromSupabase();
 
   const { state, saveCreds } = await useMultiFileAuthState("auth_info");
@@ -2912,6 +3131,255 @@ if (message.key.remoteJid.endsWith("@g.us") && !message.key.fromMe) {
   : (fullCommand || "");
       const args = text?.trim().split(" ").slice(1) || [];
 
+      // ============================================
+      // 🤖 ANTI-BOT CONTROL
+      // Owner + Sudo only
+      // ============================================
+      if (command === "antibot" && (canUseAsOwner || isSudo)) {
+        const option = args[0]?.toLowerCase();
+        const groupId = message.key.remoteJid;
+
+        if (!isGroup) {
+          await sock.sendMessage(groupId, {
+            text: "❌ *AntiBot can only be configured inside groups.*"
+          });
+          return;
+        }
+
+        if (option === "on") {
+          antiBotGroups[groupId] = true;
+          await savePersistentGroupSettings(groupId);
+
+          await sock.sendMessage(groupId, {
+            text:
+              "╭━━━〔 🤖 ANTI-BOT 〕━━━╮\\n\\n" +
+              "📡 Status: *ON* ✅\\n" +
+              "🛡️ Protected signatures: *ACTIVE*\\n" +
+              "🗑️ Suspected command messages will be deleted.\\n" +
+              "⚠️ Violators will be warned.\\n\\n" +
+              "╰━━━━━━━━━━━━━━━━━━━━╯"
+          });
+        } else if (option === "off") {
+          delete antiBotGroups[groupId];
+          await savePersistentGroupSettings(groupId);
+
+          await sock.sendMessage(groupId, {
+            text: "❌ *AntiBot disabled for this group.*"
+          });
+        } else if (option === "status") {
+          await sock.sendMessage(groupId, {
+            text:
+              "╭━━━〔 🤖 ANTI-BOT STATUS 〕━━━╮\\n\\n" +
+              `📡 Status: ${antiBotGroups[groupId] ? "*ON* ✅" : "*OFF* ❌"}\\n` +
+              `🔒 Protected signatures: *${antiBotSignatures.length}*\\n` +
+              "🗑️ Action: *Delete + Warn*\\n" +
+              "⚡ Confirmed signatures: *100% aggressive*\\n\\n" +
+              "╰━━━━━━━━━━━━━━━━━━━━━━━━━━╯"
+          });
+        } else {
+          await sock.sendMessage(groupId, {
+            text:
+              "╭━━━〔 🤖 ANTI-BOT 〕━━━╮\\n\\n" +
+              "*Commands:*\\n" +
+              `${PREFIX}antibot on — Enable\\n` +
+              `${PREFIX}antibot off — Disable\\n` +
+              `${PREFIX}antibot status — Check status\\n\\n` +
+              "🛡️ Owner/Sudo only\\n" +
+              "╰━━━━━━━━━━━━━━━━━━━━╯"
+          });
+        }
+
+        return;
+      }
+
+      // ============================================
+      // 🛡️ ANTI-BOT SIGNATURE MANAGEMENT
+      // .abs = Anti-Bot Signatures
+      // Owner + Sudo only
+      // ============================================
+      if (command === "abs" && (canUseAsOwner || isSudo)) {
+        const option = args[0]?.toLowerCase();
+        const groupId = message.key.remoteJid;
+
+        if (!isGroup) {
+          await sock.sendMessage(groupId, {
+            text: "❌ *AntiBot signatures can only be managed inside groups.*"
+          });
+          return;
+        }
+
+        // ADD signatures
+        if (option === "add") {
+          const values = args
+            .slice(1)
+            .join(" ")
+            .split(",")
+            .map(x => x.trim().toLowerCase())
+            .filter(Boolean);
+
+          if (!values.length) {
+            await sock.sendMessage(groupId, {
+              text: `❌ Usage: ${PREFIX}abs add ping,hack,eval`
+            });
+            return;
+          }
+
+          const added = [];
+          const existing = [];
+
+          for (const value of values) {
+            if (antiBotSignatures.includes(value)) {
+              existing.push(value);
+            } else {
+              antiBotSignatures.push(value);
+              added.push(value);
+            }
+          }
+
+          await savePersistentGroupSettings(groupId);
+
+          let response =
+            "╭━━━〔 🛡️ ANTI-BOT SIGNATURES 〕━━━╮\n\n";
+
+          if (added.length) {
+            response +=
+              `✅ *Added:*\n${added.map(x => `• ${x}`).join("\n")}\n\n`;
+          }
+
+          if (existing.length) {
+            response +=
+              `⚠️ *Already registered:*\n${existing.map(x => `• ${x}`).join("\n")}\n\n`;
+          }
+
+          response += "╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━╯";
+
+          await sock.sendMessage(groupId, { text: response });
+          return;
+        }
+
+        // REMOVE signatures
+        if (option === "remove") {
+          const values = args
+            .slice(1)
+            .join(" ")
+            .split(",")
+            .map(x => x.trim().toLowerCase())
+            .filter(Boolean);
+
+          if (!values.length) {
+            await sock.sendMessage(groupId, {
+              text: `❌ Usage: ${PREFIX}abs remove ping,hack,eval`
+            });
+            return;
+          }
+
+          const removed = [];
+          const notFound = [];
+
+          for (const value of values) {
+            const index = antiBotSignatures.indexOf(value);
+
+            if (index === -1) {
+              notFound.push(value);
+            } else {
+              antiBotSignatures.splice(index, 1);
+              removed.push(value);
+            }
+          }
+
+          await savePersistentGroupSettings(groupId);
+
+          let response =
+            "╭━━━〔 🛡️ ANTI-BOT SIGNATURES 〕━━━╮\n\n";
+
+          if (removed.length) {
+            response +=
+              `🗑️ *Removed:*\n${removed.map(x => `• ${x}`).join("\n")}\n\n`;
+          }
+
+          if (notFound.length) {
+            response +=
+              `⚠️ *Not found:*\n${notFound.map(x => `• ${x}`).join("\n")}\n\n`;
+          }
+
+          response += "╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━╯";
+
+          await sock.sendMessage(groupId, { text: response });
+          return;
+        }
+
+        // AntiBot ON
+        if (option === "on") {
+          antiBotGroups[groupId] = true;
+          await savePersistentGroupSettings(groupId);
+
+          await sock.sendMessage(groupId, {
+            text:
+              "╭━━━〔 🤖 ANTI-BOT 〕━━━╮\n\n" +
+              "📡 Status: *ON* ✅\n" +
+              `🛡️ Signatures: *${antiBotSignatures.length}*\n` +
+              "🗑️ Action: *Delete + Warn*\n" +
+              "🚫 3 violations = *Kick*\n\n" +
+              "╰━━━━━━━━━━━━━━━━━━━━╯"
+          });
+          return;
+        }
+
+        // AntiBot OFF
+        if (option === "off") {
+          delete antiBotGroups[groupId];
+          await savePersistentGroupSettings(groupId);
+
+          await sock.sendMessage(groupId, {
+            text: "❌ *AntiBot disabled for this group.*"
+          });
+          return;
+        }
+
+        // STATUS
+        if (option === "stats" || option === "status") {
+          const signatures =
+            antiBotSignatures.length
+              ? antiBotSignatures.map((x, i) => `${i + 1}. ${x}`).join("\n")
+              : "None";
+
+          const whitelist =
+            antiBotWhitelist.length
+              ? antiBotWhitelist.map(x => `• ${x}`).join("\n")
+              : "None";
+
+          await sock.sendMessage(groupId, {
+            text:
+              "╭━━━〔 🛡️ ANTI-BOT STATS 〕━━━╮\n\n" +
+              `📡 Status: ${antiBotGroups[groupId] ? "*ON* ✅" : "*OFF* ❌"}\n` +
+              `📊 Signatures: *${antiBotSignatures.length}*\n\n` +
+              "🚨 *SUSPECTED WORDS:*\n" +
+              `${signatures}\n\n` +
+              "🟢 *WHITELISTED:*\n" +
+              `${whitelist}\n\n` +
+              "⚔️ Action: *Delete + Warn*\n" +
+              "☠️ 3 violations: *Kick*\n\n" +
+              "╰━━━━━━━━━━━━━━━━━━━━━━━━━━╯"
+          });
+          return;
+        }
+
+        // HELP
+        await sock.sendMessage(groupId, {
+          text:
+            "╭━━━〔 🛡️ ANTI-BOT CONTROL 〕━━━╮\n\n" +
+            `• ${PREFIX}abs on\n` +
+            `• ${PREFIX}abs off\n` +
+            `• ${PREFIX}abs stats\n` +
+            `• ${PREFIX}abs add ping,hack,eval\n` +
+            `• ${PREFIX}abs remove ping,hack\n\n` +
+            "👑 Owner/Sudo only\n" +
+            "╰━━━━━━━━━━━━━━━━━━━━━━━━━━╯"
+        });
+
+        return;
+      }
+
       // Ignore single dot or empty command - BUT allow sticker messages and group messages through (for anti-* enforcement)
       if ((command === "" || command === ".") && !hasStickerMessage && !isGroup) return;
 
@@ -3270,6 +3738,190 @@ console.log('MESSAGE TYPE:', Object.keys(message.message || {}));
         }
 
         // ============================================
+        // 🤖 ANTI-BOT ENFORCEMENT
+        // Confirmed signatures = aggressive detection
+        // ============================================
+        if (
+          isGroup &&
+          antiBotGroups[message.key.remoteJid] &&
+          !isAdmin &&
+          !canUseAsOwner &&
+          !message.key.fromMe
+        ) {
+          const groupId = message.key.remoteJid;
+          const rawBotText = String(text || "").trim();
+
+          // Normalize message.
+          const normalizedBotText = rawBotText
+            .toLowerCase()
+            .replace(/\s+/g, " ")
+            .trim();
+
+          // Remove emoji/symbol prefixes.
+          // Examples:
+          // .vv !vv ?vv 🔥vv 😈.vv2
+          const compactBotText = normalizedBotText.replace(
+            /^[^\p{L}\p{N}]+/u,
+            ""
+          );
+
+          // ============================================
+          // 🟢 LEGITIMATE COMMAND WHITELIST
+          // ============================================
+          const firstBotWord =
+            compactBotText.split(/\s+/)[0] || "";
+
+          const isWhitelistedBotCommand =
+            antiBotWhitelist.some((word) => {
+              const cleanWord = String(word)
+                .toLowerCase()
+                .trim();
+
+              if (!cleanWord) return false;
+
+              const escapedWord = cleanWord.replace(
+                /[.*+?^${}()|[\]\\]/g,
+                "\\$&"
+              );
+
+              return (
+                firstBotWord === cleanWord ||
+                new RegExp(
+                  `^${escapedWord}[0-9]+$`,
+                  "i"
+                ).test(firstBotWord)
+              );
+            });
+
+          let matchedSignature = null;
+
+          // ============================================
+          // 🚨 CONFIRMED BOT COMMAND DETECTION
+          // ============================================
+          if (!isWhitelistedBotCommand && compactBotText) {
+            for (const signature of antiBotSignatures) {
+              const cleanSignature = String(signature)
+                .toLowerCase()
+                .trim();
+
+              if (!cleanSignature) continue;
+
+              const escapedSignature =
+                cleanSignature.replace(
+                  /[.*+?^${}()|[\]\\]/g,
+                  "\\$&"
+                );
+
+              // Detect:
+              // vv, vv2, vv123
+              // hidetag, hidetag2
+              // tagall, tagall2
+              // menu, menu2
+              const commandRegex = new RegExp(
+                `^${escapedSignature}(?:[0-9]+)?(?:\\s|$)`,
+                "i"
+              );
+
+              if (commandRegex.test(compactBotText)) {
+                matchedSignature = cleanSignature;
+                break;
+              }
+
+              // Detect symbols/prefixes attached to command.
+              // .vv, !vv, ?vv, 🔥vv, 😈.vv2
+              const prefixedCommandRegex = new RegExp(
+                `^[^\\p{L}\\p{N}]*${escapedSignature}(?:[0-9]+)?(?:\\s|$)`,
+                "iu"
+              );
+
+              if (
+                prefixedCommandRegex.test(
+                  normalizedBotText
+                )
+              ) {
+                matchedSignature = cleanSignature;
+                break;
+              }
+            }
+          }
+
+          // ============================================
+          // 🛑 VIOLATION
+          // ============================================
+          if (matchedSignature) {
+            const userNumber = sender.split("@")[0];
+
+            if (!antiBotWarnings[groupId]) {
+              antiBotWarnings[groupId] = {};
+            }
+
+            if (!antiBotWarnings[groupId][sender]) {
+              antiBotWarnings[groupId][sender] = 0;
+            }
+
+            antiBotWarnings[groupId][sender]++;
+
+            const warningCount =
+              antiBotWarnings[groupId][sender];
+
+            // Delete confirmed bot command immediately.
+            try {
+              await sock.sendMessage(groupId, {
+                delete: message.key
+              });
+            } catch (err) {
+              logger.error(
+                { error: err.message },
+                "Failed to delete AntiBot message"
+              );
+            }
+
+            saveData();
+
+            await sock.sendMessage(groupId, {
+              text:
+                "╭━━━〔 🤖 ANTI-BOT 〕━━━╮\n\n" +
+                `👤 @${userNumber}\n` +
+                `🚨 Detected: *${matchedSignature}*\n` +
+                `⚠️ Warning: *${warningCount}/3*\n\n` +
+                "🗑️ Message deleted.\n" +
+                "❌ Bot commands are not allowed here.\n\n" +
+                "╰━━━━━━━━━━━━━━━━━━━━╯",
+              mentions: [sender]
+            });
+
+            // ============================================
+            // ☠️ 3 VIOLATIONS = KICK
+            // ============================================
+            if (warningCount >= 3) {
+              try {
+                await sock.groupParticipantsUpdate(
+                  groupId,
+                  [sender],
+                  "remove"
+                );
+
+                await sock.sendMessage(groupId, {
+                  text:
+                    `🚫 @${userNumber} was removed after 3 AntiBot violations.`,
+                  mentions: [sender]
+                });
+
+                delete antiBotWarnings[groupId][sender];
+                saveData();
+              } catch (err) {
+                logger.error(
+                  { error: err.message },
+                  "Failed to kick AntiBot violator"
+                );
+              }
+            }
+
+            return;
+          }
+        }
+
+        // ============================================
         // Anti-Tag Enforcement (prevent tagging all members)
         // ============================================
         const antiTagAction = antiTagGroups[message.key.remoteJid];
@@ -3616,6 +4268,7 @@ if (command === "exp") {
   if (option === "enable") {
     expEnabled[groupJid] = true;
     saveData();
+    await saveGroupSettingsToSupabase(groupJid);
 
     await sock.sendMessage(groupJid, {
       text:
@@ -3631,6 +4284,7 @@ if (command === "exp") {
   if (option === "disable") {
     delete expEnabled[groupJid];
     saveData();
+    await saveGroupSettingsToSupabase(groupJid);
 
     await sock.sendMessage(groupJid, {
       text:
@@ -5252,7 +5906,7 @@ const option = args[0]?.toLowerCase();
 if (option === "on") {
   if (!nightModeGroups.includes(message.key.remoteJid)) {
     nightModeGroups.push(message.key.remoteJid);
-    saveData();
+    await savePersistentGroupSettings(message.key.remoteJid);
 
     logger.info(
       { groups: nightModeGroups },
@@ -5272,7 +5926,7 @@ if (option === "off") {
 
   if (index !== -1) {
     nightModeGroups.splice(index, 1);
-    saveData();
+    await savePersistentGroupSettings(message.key.remoteJid);
 
     logger.info(
       { groups: nightModeGroups },
@@ -5300,7 +5954,7 @@ if (option === "off") {
 
   if (option === "on") {
     activityTracking[groupId] = true;
-    saveData();
+    await savePersistentGroupSettings(groupId);
 
     logger.info(
       { groupId },
@@ -5315,7 +5969,7 @@ if (option === "off") {
 
   if (option === "off") {
     delete activityTracking[groupId];
-    saveData();
+    await savePersistentGroupSettings(groupId);
 
     logger.info(
       { groupId },
@@ -5987,7 +6641,7 @@ if (command === "kick") {
           } else {
             antiPhotoGroups[message.key.remoteJid] = action;
           }
-          saveData();
+          await savePersistentGroupSettings(message.key.remoteJid);
 
           await sock.sendMessage(message.key.remoteJid, {
             text: action === "off" ? "❌ Anti-Photo disabled." : `✅ Anti-Photo enabled (*${action}*).`,
@@ -6022,7 +6676,7 @@ if (command === "kick") {
           } else {
             antiStatusGroups[message.key.remoteJid] = action;
           }
-          saveData();
+          await savePersistentGroupSettings(message.key.remoteJid);
 
           await sock.sendMessage(message.key.remoteJid, {
             text: action === "off" ? "❌ Anti-Status disabled." : `✅ Anti-Status enabled (*${action}*).`,
@@ -6057,7 +6711,7 @@ if (command === "kick") {
           } else {
             antiTagGroups[message.key.remoteJid] = action;
           }
-          saveData();
+          await savePersistentGroupSettings(message.key.remoteJid);
 
           await sock.sendMessage(message.key.remoteJid, {
             text: action === "off" ? "❌ Anti-Tag disabled." : `✅ Anti-Tag enabled (*${action}*).`,
@@ -6092,7 +6746,7 @@ if (command === "kick") {
           } else {
             antiSpamGroups[message.key.remoteJid] = action;
           }
-          saveData();
+          await savePersistentGroupSettings(message.key.remoteJid);
 
           await sock.sendMessage(message.key.remoteJid, {
             text: action === "off" ? "❌ Anti-Spam disabled." : `✅ Anti-Spam enabled (*${action}*).`,
@@ -6121,7 +6775,7 @@ if (command === "kick") {
 
           // Save the custom welcome message for this group
           customWelcomeMessages[message.key.remoteJid] = welcomeText;
-          saveData(); // Persist to JSON
+          await savePersistentGroupSettings(message.key.remoteJid);
 
           await sock.sendMessage(message.key.remoteJid, {
             text: `✅ Welcome message set!\n\n_Preview placeholders:_\n• {user} → @mention\n• {username} → username\n• {groupname} → group name\n• {desc} → group description\n• {membercount} → member count\n• {grppp} → group profile picture\n• {userpp} → new member's profile picture`,
@@ -6151,7 +6805,7 @@ if (command === "kick") {
 
           // Remove custom welcome message
           delete customWelcomeMessages[message.key.remoteJid];
-          saveData(); // Persist to JSON
+          await savePersistentGroupSettings(message.key.remoteJid);
 
           await sock.sendMessage(message.key.remoteJid, {
             text: `Welcome message reset to default.`,
@@ -6181,7 +6835,7 @@ if (command === "kick") {
 
           const isOn = action === "on";
           welcomeEnabled[message.key.remoteJid] = isOn;
-          saveData();
+          await savePersistentGroupSettings(message.key.remoteJid);
 
           await sock.sendMessage(message.key.remoteJid, {
             text: isOn ? "✅ Welcome messages enabled for this group." : "❌ Welcome messages disabled for this group.",
@@ -6210,7 +6864,7 @@ if (command === "kick") {
 
           const isOn = action === "on";
           goodbyeEnabled[message.key.remoteJid] = isOn;
-          saveData();
+          await savePersistentGroupSettings(message.key.remoteJid);
 
           await sock.sendMessage(message.key.remoteJid, {
             text: isOn ? "✅ Goodbye messages enabled for this group." : "❌ Goodbye messages disabled for this group.",
@@ -6237,7 +6891,7 @@ if (command === "kick") {
           }
 
           customGoodbyeMessages[message.key.remoteJid] = goodbyeText;
-          saveData();
+          await savePersistentGroupSettings(message.key.remoteJid);
 
           await sock.sendMessage(message.key.remoteJid, {
             text: `✅ Goodbye message set!\n\n_Preview placeholders:_\n• {user} → @mention\n• {username} → username\n• {groupname} → group name\n• {desc} → group description\n• {membercount} → member count\n• {grppp} → group profile picture\n• {userpp} → member's profile picture`,
@@ -6266,7 +6920,7 @@ if (command === "kick") {
           }
 
           delete customGoodbyeMessages[message.key.remoteJid];
-          saveData();
+          await savePersistentGroupSettings(message.key.remoteJid);
 
           await sock.sendMessage(message.key.remoteJid, {
             text: `Goodbye message reset to default.`,
