@@ -10,7 +10,14 @@ const {
 } = require("@whiskeysockets/baileys");
 
 const pino = require("pino");
+require("dotenv").config();
 const fs = require("fs");
+const { createClient } = require("@supabase/supabase-js");
+
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_KEY
+);
 const path = require("path");
 const sharp = require("sharp");
 const youtubedl = require('youtube-dl-exec');
@@ -250,6 +257,37 @@ if (data.groupActivity) {
 };
 
 // Save data to JSON file
+const loadExpFromSupabase = async () => {
+  try {
+    const { data, error } = await supabase
+      .from("bot_exp")
+      .select("group_jid, user_jid, exp, level");
+
+    if (error) throw error;
+
+    for (const row of data || []) {
+      if (!userExp[row.group_jid]) {
+        userExp[row.group_jid] = {};
+      }
+
+      userExp[row.group_jid][row.user_jid] = {
+        exp: Number(row.exp) || 0,
+        level: Number(row.level) || 1
+      };
+    }
+
+    logger.info(
+      { rows: (data || []).length },
+      "EXP data loaded from Supabase"
+    );
+  } catch (error) {
+    logger.error(
+      { error: error.message },
+      "Failed to load EXP data from Supabase"
+    );
+  }
+};
+
 const saveData = () => {
   try {
     const data = {
@@ -285,6 +323,32 @@ const saveData = () => {
     logger.error({ error: error.message }, 'Error saving bot data');
   }
 };
+const saveExpToSupabase = async (groupJid, userJid, userData) => {
+  try {
+    const { error } = await supabase
+      .from("bot_exp")
+      .upsert({
+        group_jid: groupJid,
+        user_jid: userJid,
+        exp: Number(userData.exp) || 0,
+        level: Number(userData.level) || 1
+      }, {
+        onConflict: "group_jid,user_jid"
+      });
+
+    if (error) throw error;
+  } catch (error) {
+    logger.error(
+      {
+        groupJid,
+        userJid,
+        error: error.message
+      },
+      "Failed to save EXP to Supabase"
+    );
+  }
+};
+
 // ============================================
 // EXP / LEVEL CALCULATION
 // ============================================
@@ -1711,6 +1775,7 @@ const getMenu = () => `
 async function startBot() {
   // Load saved data on startup
   loadData();
+  await loadExpFromSupabase();
 
   const { state, saveCreds } = await useMultiFileAuthState("auth_info");
 
@@ -2662,8 +2727,9 @@ if (message.key.remoteJid.endsWith("@g.us") && !message.key.fromMe) {
             });
           }
 
-          // Save EXP progress
+          // Save EXP progress locally and permanently to Supabase
           saveData();
+          await saveExpToSupabase(groupJid, userJid, userData);
         }
       }
       let sender = message.key.participant || message.key.remoteJid;
