@@ -1893,6 +1893,7 @@ const getMenu = () => `
 ║ 🚫 block
 ║ ✅ unblock      
 ║ 🚪 left
+║ 🚧 antibot
 ║ 📥 acceptall    
 ║ ❌ rejectall
 ║ 🌙 nightmode on|off 
