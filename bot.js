@@ -3153,11 +3153,11 @@ if (message.key.remoteJid.endsWith("@g.us") && !message.key.fromMe) {
 
           await sock.sendMessage(groupId, {
             text:
-              "╭━━━〔 🤖 ANTI-BOT 〕━━━╮\\n\\n" +
-              "📡 Status: *ON* ✅\\n" +
-              "🛡️ Protected signatures: *ACTIVE*\\n" +
-              "🗑️ Suspected command messages will be deleted.\\n" +
-              "⚠️ Violators will be warned.\\n\\n" +
+              "╭━━━〔 🤖 ANTI-BOT 〕━━━╮\n\n" +
+              "📡 Status: *ON* ✅\n" +
+              "🛡️ Protected signatures: *ACTIVE*\n" +
+              "🗑️ Suspected command messages will be deleted.\n" +
+              "⚠️ Violators will be warned.\n\n" +
               "╰━━━━━━━━━━━━━━━━━━━━╯"
           });
         } else if (option === "off") {
