@@ -3862,6 +3862,12 @@ console.log('MESSAGE TYPE:', Object.keys(message.message || {}));
 
             antiBotWarnings[groupId][sender]++;
 
+            // Sync AntiBot warnings with the normal warning system
+            // so .warn / .unwarn can manage AntiBot warnings too.
+            if (!userWarns[groupId]) userWarns[groupId] = {};
+            if (!userWarns[groupId][sender]) userWarns[groupId][sender] = 0;
+            userWarns[groupId][sender]++;
+
             const warningCount =
               antiBotWarnings[groupId][sender];
 
