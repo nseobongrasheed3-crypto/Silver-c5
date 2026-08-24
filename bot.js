@@ -6419,9 +6419,22 @@ if (command === "kick") {
           }
 
           const warnCount = userWarns[groupId][targetJid];
-          userWarns[groupId][targetJid]--;
-          
-          if (userWarns[groupId][targetJid] <= 0) {
+
+      // Sync .unwarn with AntiBot warnings
+      userWarns[groupId][targetJid]--;
+
+      if (
+        antiBotWarnings[groupId] &&
+        antiBotWarnings[groupId][targetJid] > 0
+      ) {
+        antiBotWarnings[groupId][targetJid]--;
+
+        if (antiBotWarnings[groupId][targetJid] <= 0) {
+          delete antiBotWarnings[groupId][targetJid];
+        }
+      }
+
+      if (userWarns[groupId][targetJid] <= 0) {
             delete userWarns[groupId][targetJid];
             await sock.sendMessage(message.key.remoteJid, {
               text: `✅ @${targetJid.split("@")[0]} warnings cleared.`,
