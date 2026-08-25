@@ -10,14 +10,7 @@ const {
 } = require("@whiskeysockets/baileys");
 
 const pino = require("pino");
-require("dotenv").config();
 const fs = require("fs");
-const { createClient } = require("@supabase/supabase-js");
-
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_KEY
-);
 const path = require("path");
 const sharp = require("sharp");
 const youtubedl = require('youtube-dl-exec');
@@ -39,21 +32,6 @@ const adminSettings = {};
 const stickerCommands = {};
 const lockedGroups = new Set();
 const userWarns = {};
-
-// ============================================
-// 🚫 BAN SYSTEM
-// ============================================
-
-// { groupJid: { userJid: { mode, bannedAt, bannedBy } } }
-const bannedUsers = {};
-
-// ============================================
-// 🚫 DM BLOCKER
-// ============================================
-
-let dmBlockerEnabled = false;
-let dmBlockerMessage = "❌ You cannot message this bot.";
-
 let BOT_OWNER = null; // Will be auto-detected from pairing
 const sudoUsers = []; // Users who can use the bot like owner
 let nightModeGroups = [];
@@ -137,33 +115,6 @@ const spamTracker = new Map(); // { 'groupJid:senderJid': { count, firstMsgTime,
 const SPAM_THRESHOLD = 8; // messages within time window
 const SPAM_WINDOW = 5000; // 5 seconds
 
-// ============================================
-// 🤖 ANTI-BOT SYSTEM
-// ============================================
-
-// AntiBot enabled per group
-const antiBotGroups = {}; // { groupJid: true/false }
-
-// Commands/signatures treated as confirmed bot commands
-const antiBotSignatures = [
-  "vv",
-  "hidetag",
-  "tagall",
-  "menu"
-];
-
-// Legitimate commands that AntiBot must never flag
-const antiBotWhitelist = [
-  "rank",
-  "top",
-  "level",
-  "exp",
-  "expleaderboard"
-];
-
-// AntiBot violation tracking
-const antiBotWarnings = {}; // { groupJid: { userJid: count } }
-
 // Anti-Delete System
 let antiDeleteEnabled = false; // Global toggle for anti-delete
 const messageCache = new Map(); // Cache messages for anti-delete { messageId: messageData }
@@ -221,20 +172,6 @@ if (data.prefix) {
         Object.assign(userWarns, data.userWarns);
       }
 
-      // Load banned users
-      if (data.bannedUsers) {
-        Object.assign(bannedUsers, data.bannedUsers);
-      }
-
-      // Load DM blocker settings
-      if (data.dmBlockerEnabled !== undefined) {
-        dmBlockerEnabled = Boolean(data.dmBlockerEnabled);
-      }
-
-      if (typeof data.dmBlockerMessage === "string") {
-        dmBlockerMessage = data.dmBlockerMessage;
-      }
-
       // Load sudo users
       if (data.sudoUsers && Array.isArray(data.sudoUsers)) {
         sudoUsers.length = 0;
@@ -281,20 +218,6 @@ if (data.nightModeGroups && Array.isArray(data.nightModeGroups)) {
         Object.assign(antiSpamGroups, data.antiSpamGroups);
       }
 
-      // Load AntiBot settings
-      if (data.antiBotGroups) {
-        Object.assign(antiBotGroups, data.antiBotGroups);
-      }
-
-      if (Array.isArray(data.antiBotSignatures) && data.antiBotSignatures.length) {
-        antiBotSignatures.length = 0;
-        antiBotSignatures.push(...data.antiBotSignatures);
-      }
-
-      if (data.antiBotWarnings) {
-        Object.assign(antiBotWarnings, data.antiBotWarnings);
-      }
-
       // Load anti-delete setting
       if (data.antiDeleteEnabled !== undefined) {
         antiDeleteEnabled = data.antiDeleteEnabled;
@@ -327,37 +250,6 @@ if (data.groupActivity) {
 };
 
 // Save data to JSON file
-const loadExpFromSupabase = async () => {
-  try {
-    const { data, error } = await supabase
-      .from("bot_exp")
-      .select("group_jid, user_jid, exp, level");
-
-    if (error) throw error;
-
-    for (const row of data || []) {
-      if (!userExp[row.group_jid]) {
-        userExp[row.group_jid] = {};
-      }
-
-      userExp[row.group_jid][row.user_jid] = {
-        exp: Number(row.exp) || 0,
-        level: Number(row.level) || 1
-      };
-    }
-
-    logger.info(
-      { rows: (data || []).length },
-      "EXP data loaded from Supabase"
-    );
-  } catch (error) {
-    logger.error(
-      { error: error.message },
-      "Failed to load EXP data from Supabase"
-    );
-  }
-};
-
 const saveData = () => {
   try {
     const data = {
@@ -370,11 +262,6 @@ const saveData = () => {
       stickerCommands,
       adminSettings,
       userWarns,
-
-      bannedUsers,
-      dmBlockerEnabled,
-      dmBlockerMessage,
-
       sudoUsers,
       nightModeGroups,
       wcgStats,
@@ -384,9 +271,6 @@ const saveData = () => {
       antiStatusGroups,
       antiTagGroups,
       antiSpamGroups,
-      antiBotGroups,
-      antiBotSignatures,
-      antiBotWarnings,
       antiDeleteEnabled,
       groupActivity,
       activityTracking,
@@ -401,214 +285,6 @@ const saveData = () => {
     logger.error({ error: error.message }, 'Error saving bot data');
   }
 };
-
-// ============================================
-// ☁️ GROUP SETTINGS — SUPABASE BACKUP
-// ============================================
-
-// Save all persistent group settings to Supabase.
-// Each group is stored separately by its JID.
-const saveGroupSettingsToSupabase = async (groupJid) => {
-  try {
-    const settings = {
-      customWelcomeMessage: customWelcomeMessages[groupJid] ?? null,
-      customGoodbyeMessage: customGoodbyeMessages[groupJid] ?? null,
-      welcomeEnabled: welcomeEnabled[groupJid] ?? false,
-      goodbyeEnabled: goodbyeEnabled[groupJid] ?? false,
-
-      antiMention: antiMentionGroups[groupJid] ?? false,
-      antiPhoto: antiPhotoGroups[groupJid] ?? false,
-      antiStatus: antiStatusGroups[groupJid] ?? false,
-      antiTag: antiTagGroups[groupJid] ?? false,
-      antiSpam: antiSpamGroups[groupJid] ?? false,
-
-      antiBot: antiBotGroups[groupJid] ?? false,
-      antiBotSignatures: [...antiBotSignatures],
-
-      // Ban system
-      bannedUsers: bannedUsers[groupJid] ?? {},
-
-      nightMode: nightModeGroups.includes(groupJid),
-
-      activityTracking: activityTracking[groupJid] ?? false,
-      expEnabled: expEnabled[groupJid] ?? false
-    };
-
-    const { error } = await supabase
-      .from("bot_group_settings")
-      .upsert({
-        group_jid: groupJid,
-        settings,
-        updated_at: new Date().toISOString()
-      }, {
-        onConflict: "group_jid"
-      });
-
-    if (error) throw error;
-
-    logger.debug(
-      { groupId: groupJid },
-      "Group settings backed up to Supabase"
-    );
-  } catch (error) {
-    logger.error(
-      {
-        groupId: groupJid,
-        error: error.message
-      },
-      "Failed to backup group settings to Supabase"
-    );
-  }
-};
-
-// Load all persistent group settings from Supabase.
-const loadGroupSettingsFromSupabase = async () => {
-  try {
-    const { data, error } = await supabase
-      .from("bot_group_settings")
-      .select("group_jid, settings");
-
-    if (error) throw error;
-
-    for (const row of data || []) {
-      const groupId = row.group_jid;
-      const settings = row.settings || {};
-
-      if (settings.customWelcomeMessage !== null &&
-          settings.customWelcomeMessage !== undefined) {
-        customWelcomeMessages[groupId] =
-          settings.customWelcomeMessage;
-      }
-
-      if (settings.customGoodbyeMessage !== null &&
-          settings.customGoodbyeMessage !== undefined) {
-        customGoodbyeMessages[groupId] =
-          settings.customGoodbyeMessage;
-      }
-
-      welcomeEnabled[groupId] =
-        Boolean(settings.welcomeEnabled);
-
-      goodbyeEnabled[groupId] =
-        Boolean(settings.goodbyeEnabled);
-
-      antiMentionGroups[groupId] =
-        settings.antiMention || false;
-
-      antiPhotoGroups[groupId] =
-        settings.antiPhoto || false;
-
-      antiStatusGroups[groupId] =
-        settings.antiStatus || false;
-
-      antiTagGroups[groupId] =
-        settings.antiTag || false;
-
-      antiSpamGroups[groupId] =
-        settings.antiSpam || false;
-
-      antiBotGroups[groupId] =
-        Boolean(settings.antiBot);
-
-      // Restore banned users for this group
-      if (
-        settings.bannedUsers &&
-        typeof settings.bannedUsers === "object"
-      ) {
-        bannedUsers[groupId] =
-          settings.bannedUsers;
-      }
-
-      activityTracking[groupId] =
-        Boolean(settings.activityTracking);
-
-      expEnabled[groupId] =
-        Boolean(settings.expEnabled);
-
-      if (settings.nightMode && !nightModeGroups.includes(groupId)) {
-        nightModeGroups.push(groupId);
-      }
-    }
-
-    // Restore the globally managed AntiBot signatures.
-    const signatureSets = (data || [])
-      .map(row => row.settings?.antiBotSignatures)
-      .filter(Array.isArray);
-
-    if (signatureSets.length > 0) {
-      const mergedSignatures = [
-        ...new Set(
-          signatureSets
-            .flat()
-            .map(x => String(x).toLowerCase().trim())
-            .filter(Boolean)
-        )
-      ];
-
-      if (mergedSignatures.length > 0) {
-        antiBotSignatures.length = 0;
-        antiBotSignatures.push(...mergedSignatures);
-      }
-    }
-
-    logger.info(
-      { groups: (data || []).length },
-      "Group settings loaded from Supabase"
-    );
-  } catch (error) {
-    logger.error(
-      { error: error.message },
-      "Failed to load group settings from Supabase"
-    );
-  }
-};
-
-// ============================================
-// ☁️ PERSISTENT GROUP SETTINGS SAVE HELPER
-// ============================================
-// Saves the local JSON backup AND the Supabase
-// backup whenever a group setting is changed.
-const savePersistentGroupSettings = async (groupJid) => {
-  try {
-    saveData();
-    await saveGroupSettingsToSupabase(groupJid);
-  } catch (error) {
-    logger.error(
-      {
-        groupId: groupJid,
-        error: error.message
-      },
-      "Failed to save persistent group settings"
-    );
-  }
-};
-
-const saveExpToSupabase = async (groupJid, userJid, userData) => {
-  try {
-    const { error } = await supabase
-      .from("bot_exp")
-      .upsert({
-        group_jid: groupJid,
-        user_jid: userJid,
-        exp: Number(userData.exp) || 0,
-        level: Number(userData.level) || 1
-      }, {
-        onConflict: "group_jid,user_jid"
-      });
-
-    if (error) throw error;
-  } catch (error) {
-    logger.error(
-      {
-        groupJid,
-        userJid,
-        error: error.message
-      },
-      "Failed to save EXP to Supabase"
-    );
-  }
-};
-
 // ============================================
 // EXP / LEVEL CALCULATION
 // ============================================
@@ -1918,48 +1594,36 @@ const getMenu = () => `
 ╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╯
 
 ╭─〔 ⚡ SYSTEM STATUS 〕────────────────╮
-│ 👑 *Owner*    │ ${BOT_OWNER || 'Unknown'}
-│ 🌐 *Mode*     │ ${botMode.toUpperCase()}
-│ ⏱ *Uptime*    │ ${formatUptime()}
-│ 🚀 *Version*  │ v2.0.0
+│ 👑 Owner    │ ${BOT_OWNER || 'Unknown'}
+│ 🌐 Mode     │ ${botMode.toUpperCase()}
+│ ⏱ Uptime    │ ${formatUptime()}
+│ 🚀 Version  │ v2.0.0
 │
-│ 🟣 *CPU*    ▰▰▰▰▰▰▱▱▱ 70%
-│ 🔵 *RAM*    ▰▰▰▰▰▰▰▰▱ 90%
-│ 🟢 *BOT*    ▰▰▰▰▰▰▰▰▰ ONLINE
+│ 🟣 CPU    ▰▰▰▰▰▰▱▱▱ 70%
+│ 🔵 RAM    ▰▰▰▰▰▰▰▰▱ 90%
+│ 🟢 BOT    ▰▰▰▰▰▰▰▰▰ ONLINE
 ╰──────────────────────────────────────╯
 
-╔═════ 👥 *GROUP* ════════╗
-║ 🔓 open
-║ 🔒 lock             
-║ 👢 kick 
-║ ⚠️ warn. 
-║ ♻️ unwarn       
-║ ⬆️ promote 
-║ ⬇️ demote 
-║ 🚫 block
-║ ✅ unblock      
-║ 🚪 left
-║ 🚧 antibot
-║ 📥 acceptall    
-║ ❌ rejectall
-║ 🌙 nightmode on|off 
-║ 🏋️trackactivity status
-║ 👀trackactivity on|off 
-╚════════════════════════╝
+╔══════════════ 👥 GROUP ══════════════╗
+║ 🔒 lock          🔓 open   
+║ 👢 kick          ⚠️ warn. 
+║ ♻️ unwarn        ⬆️ promote 
+║ ⬇️ demote        🚫 block
+║ ✅ unblock       🚪 left
+║ 📥 acceptall     ❌ rejectall
+║ 🌙 nightmode on|off 🏋️trackactivity status
+║ 🏋️👀trackactivity on|off                  
+╚══════════════════════════════════════╝
 
-╔════ 🏆 *MEMBER* *MANAGEMENT* ═══════╗
+╔════════ 🏆 MEMBER MANAGEMENT ════════╗
 ║ 📊 listactive
 ║ 👻 inactive
 ║ 🦵 kickinactive
 ║ ✅ confirmkick
-║ ❌ cancelkick ║ 👻 lb
-║ 🎩 top
-║ 🏆 leaderboard
-║ 🔝 expleaderboard
-║ 🎚️ level
-╚══════════════════════════════════╝
+║ ❌ cancelkick
+╚══════════════════════════════════════╝
 
-╔═════════ 💬 *CHAT* ════════════╗
+╔══════════════ 💬 CHAT ═══════════════╗
 ║ 🔗 antilink       🖼 antiphoto
 ║ 📢 antistatus     🏷 antitag
 ║ 🚫 antispam       👥 tagall
@@ -1967,46 +1631,46 @@ const getMenu = () => `
 ║ 👋 welcome        👋 goodbye
 ║ ✍️ setwelcome     ♻️ resetwelcome
 ║ ✍️ setgoodbye     ♻️ resetgoodbye
-╚═══════════════════════════════╝
+╚══════════════════════════════════════╝
 
-╔════════ 🎮 *GAMES* ══════════╗
+╔══════════════ 🎮 GAMES ══════════════╗
 ║ 🎭 anonymous
 ║ 🔤 rtw
 ║ 🔗 wcg
 ║ 📈 wcgstat
 ║ ❓ 400q
 ║ ⛔ end
-╚═════════════════════════════╝
+╚══════════════════════════════════════╝
 
-╔══════ 🎨 *STICKERS* ═══════════╗
+╔════════════ 🎨 STICKERS ═════════════╗
 ║ 🖼 sticker
 ║ ⭐ setsticker
-╚══════════════════════════════╝
+╚══════════════════════════════════════╝
 
-╔════════ 🛠 *UTILITIES* ═══════════╗
+╔════════════ 🛠 UTILITIES ════════════╗
 ║ 👁 vv            💾 save
 ║ 👤 getpp         🎵 play
 ║ 🏓 ping          🗑 delete
 ║ 📇 vcf           🌍 tr
 ║ 😴 afk           😊 back
 ║ 🖼 toimg         🎧 tomp3
-╚══════════════════════════════════╝
+╚══════════════════════════════════════╝
 
-╔══════ 📥 *DOWNLOADS* ══════╗
+╔═══════════ 📥 DOWNLOADS ═════════════╗
 ║ 🎵 tt
-╚══════════════════════════╝
+╚══════════════════════════════════════╝
 
-╔════ 💰 *CRYPTO* ══════════╗
+╔════════════ 💰 CRYPTO ═══════════════╗
 ║ 📈 live
-╚═════════════════════════╝
+╚══════════════════════════════════════╝
 
-╔════════════ ⚙ *SETTINGS* ══════════╗
+╔════════════ ⚙ SETTINGS ═════════════╗
 ║ 🌍 public        🔒 private
 ║ 🛡 antidel       👑 sudo
 ║ ❌ delsudo       📜 listsudo
 ║ ➕ join          📖 menu
 ║ ❔ help          ⚙️ setprefix 
-╚══════════════════════════════════╝
+╚══════════════════════════════════════╝
 
 ╭────────── 🤖 AUTO FEATURES ──────────╮
 │ 🌙 Night Mode          ● ACTIVE
@@ -2036,12 +1700,6 @@ const getMenu = () => `
 async function startBot() {
   // Load saved data on startup
   loadData();
-
-  // ☁️ Restore persistent group settings from Supabase
-  await loadGroupSettingsFromSupabase();
-
-  // ☁️ Restore EXP data from Supabase
-  await loadExpFromSupabase();
 
   const { state, saveCreds } = await useMultiFileAuthState("auth_info");
 
@@ -2489,70 +2147,7 @@ Ready to manage!`,
     const groupJid = id;
 
     if (action === 'add') {
-
-      // ============================================
-      // 🚫 AUTOMATIC BANNED USER PROTECTION
-      // ============================================
-
-      const groupBans =
-        bannedUsers[groupJid] || {};
-
-      for (const participant of participants) {
-
-        const participantJid =
-          typeof participant === "string"
-            ? participant
-            : participant?.id ||
-              participant?.jid ||
-              String(participant);
-
-        if (groupBans[participantJid]) {
-
-          const banInfo =
-            groupBans[participantJid];
-
-          try {
-
-            await sock.sendMessage(groupJid, {
-              text:
-                "╭━━━〔 🚫 BANNED USER 〕━━━╮\n\n" +
-                `👤 @${participantJid.split("@")[0]}\n` +
-                "❌ This user is banned from this group.\n" +
-                "👢 Removing automatically...\n\n" +
-                "╰━━━━━━━━━━━━━━━━━━━━╯",
-              mentions: [participantJid]
-            });
-
-            await sock.groupParticipantsUpdate(
-              groupJid,
-              [participantJid],
-              "remove"
-            );
-
-            logger.info(
-              {
-                groupId: groupJid,
-                user: participantJid,
-                mode: banInfo.mode
-              },
-              "Banned user automatically removed"
-            );
-
-          } catch (err) {
-
-            logger.error(
-              {
-                groupId: groupJid,
-                user: participantJid,
-                error: err.message
-              },
-              "Failed to remove banned user"
-            );
-          }
-        }
-      }
-
-      // Continue with normal welcome handling
+      // Check if welcome is enabled for this group (disabled by default)
       if (!welcomeEnabled[groupJid]) {
         return;
       }
@@ -2987,82 +2582,6 @@ if (message.key.remoteJid.endsWith("@g.us") && !message.key.fromMe) {
       const isDM = !isGroup;
 
       // ============================================
-      // 🚫 DM BLOCKER ENFORCEMENT
-      // ============================================
-
-      if (
-        isDM &&
-        dmBlockerEnabled &&
-        !message.key.fromMe
-      ) {
-
-        const senderJid =
-          message.key.participant ||
-          message.key.remoteJid;
-
-        const senderNumber =
-          senderJid?.split("@")[0];
-
-        const ownerNumber =
-          BOT_OWNER?.split("@")[0];
-
-        const isOwner =
-          Boolean(
-            senderNumber &&
-            ownerNumber &&
-            senderNumber === ownerNumber
-          );
-
-        const isSudo =
-          Array.isArray(sudoUsers) &&
-          sudoUsers.some(
-            user =>
-              String(user).split("@")[0] ===
-              senderNumber
-          );
-
-        if (!isOwner && !isSudo) {
-
-          try {
-
-            await sock.sendMessage(
-              message.key.remoteJid,
-              {
-                text: dmBlockerMessage
-              }
-            );
-
-            await sock.updateBlockStatus(
-              message.key.remoteJid,
-              "block"
-            );
-
-            logger.info(
-              {
-                user:
-                  message.key.remoteJid
-              },
-              "Unauthorized DM blocked"
-            );
-
-          } catch (err) {
-
-            logger.error(
-              {
-                user:
-                  message.key.remoteJid,
-                error:
-                  err.message
-              },
-              "Failed to block unauthorized DM"
-            );
-          }
-
-          return;
-        }
-      }
-
-      // ============================================
       // EXP SYSTEM — AUTOMATIC MESSAGE XP
       // ============================================
       if (
@@ -3132,9 +2651,8 @@ if (message.key.remoteJid.endsWith("@g.us") && !message.key.fromMe) {
             });
           }
 
-          // Save EXP progress locally and permanently to Supabase
+          // Save EXP progress
           saveData();
-          await saveExpToSupabase(groupJid, userJid, userData);
         }
       }
       let sender = message.key.participant || message.key.remoteJid;
@@ -3316,255 +2834,6 @@ if (message.key.remoteJid.endsWith("@g.us") && !message.key.fromMe) {
   ? fullCommand.slice(PREFIX.length)
   : (fullCommand || "");
       const args = text?.trim().split(" ").slice(1) || [];
-
-      // ============================================
-      // 🤖 ANTI-BOT CONTROL
-      // Owner + Sudo only
-      // ============================================
-      if (command === "antibot" && (canUseAsOwner || isSudo)) {
-        const option = args[0]?.toLowerCase();
-        const groupId = message.key.remoteJid;
-
-        if (!isGroup) {
-          await sock.sendMessage(groupId, {
-            text: "❌ *AntiBot can only be configured inside groups.*"
-          });
-          return;
-        }
-
-        if (option === "on") {
-          antiBotGroups[groupId] = true;
-          await savePersistentGroupSettings(groupId);
-
-          await sock.sendMessage(groupId, {
-            text:
-              "╭━━━〔 🤖 ANTI-BOT 〕━━━╮\n\n" +
-              "📡 Status: *ON* ✅\n" +
-              "🛡️ Protected signatures: *ACTIVE*\n" +
-              "🗑️ Suspected command messages will be deleted.\n" +
-              "⚠️ Violators will be warned.\n\n" +
-              "╰━━━━━━━━━━━━━━━━━━━━╯"
-          });
-        } else if (option === "off") {
-          delete antiBotGroups[groupId];
-          await savePersistentGroupSettings(groupId);
-
-          await sock.sendMessage(groupId, {
-            text: "❌ *AntiBot disabled for this group.*"
-          });
-        } else if (option === "status") {
-          await sock.sendMessage(groupId, {
-            text:
-              "╭━━━〔 🤖 ANTI-BOT STATUS 〕━━━╮\\n\\n" +
-              `📡 Status: ${antiBotGroups[groupId] ? "*ON* ✅" : "*OFF* ❌"}\\n` +
-              `🔒 Protected signatures: *${antiBotSignatures.length}*\\n` +
-              "🗑️ Action: *Delete + Warn*\\n" +
-              "⚡ Confirmed signatures: *100% aggressive*\\n\\n" +
-              "╰━━━━━━━━━━━━━━━━━━━━━━━━━━╯"
-          });
-        } else {
-          await sock.sendMessage(groupId, {
-            text:
-              "╭━━━〔 🤖 ANTI-BOT 〕━━━╮\\n\\n" +
-              "*Commands:*\\n" +
-              `${PREFIX}antibot on — Enable\\n` +
-              `${PREFIX}antibot off — Disable\\n` +
-              `${PREFIX}antibot status — Check status\\n\\n` +
-              "🛡️ Owner/Sudo only\\n" +
-              "╰━━━━━━━━━━━━━━━━━━━━╯"
-          });
-        }
-
-        return;
-      }
-
-      // ============================================
-      // 🛡️ ANTI-BOT SIGNATURE MANAGEMENT
-      // .abs = Anti-Bot Signatures
-      // Owner + Sudo only
-      // ============================================
-      if (command === "abs" && (canUseAsOwner || isSudo)) {
-        const option = args[0]?.toLowerCase();
-        const groupId = message.key.remoteJid;
-
-        if (!isGroup) {
-          await sock.sendMessage(groupId, {
-            text: "❌ *AntiBot signatures can only be managed inside groups.*"
-          });
-          return;
-        }
-
-        // ADD signatures
-        if (option === "add") {
-          const values = args
-            .slice(1)
-            .join(" ")
-            .split(",")
-            .map(x => x.trim().toLowerCase())
-            .filter(Boolean);
-
-          if (!values.length) {
-            await sock.sendMessage(groupId, {
-              text: `❌ Usage: ${PREFIX}abs add ping,hack,eval`
-            });
-            return;
-          }
-
-          const added = [];
-          const existing = [];
-
-          for (const value of values) {
-            if (antiBotSignatures.includes(value)) {
-              existing.push(value);
-            } else {
-              antiBotSignatures.push(value);
-              added.push(value);
-            }
-          }
-
-          await savePersistentGroupSettings(groupId);
-
-          let response =
-            "╭━━━〔 🛡️ ANTI-BOT SIGNATURES 〕━━━╮\n\n";
-
-          if (added.length) {
-            response +=
-              `✅ *Added:*\n${added.map(x => `• ${x}`).join("\n")}\n\n`;
-          }
-
-          if (existing.length) {
-            response +=
-              `⚠️ *Already registered:*\n${existing.map(x => `• ${x}`).join("\n")}\n\n`;
-          }
-
-          response += "╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━╯";
-
-          await sock.sendMessage(groupId, { text: response });
-          return;
-        }
-
-        // REMOVE signatures
-        if (option === "remove") {
-          const values = args
-            .slice(1)
-            .join(" ")
-            .split(",")
-            .map(x => x.trim().toLowerCase())
-            .filter(Boolean);
-
-          if (!values.length) {
-            await sock.sendMessage(groupId, {
-              text: `❌ Usage: ${PREFIX}abs remove ping,hack,eval`
-            });
-            return;
-          }
-
-          const removed = [];
-          const notFound = [];
-
-          for (const value of values) {
-            const index = antiBotSignatures.indexOf(value);
-
-            if (index === -1) {
-              notFound.push(value);
-            } else {
-              antiBotSignatures.splice(index, 1);
-              removed.push(value);
-            }
-          }
-
-          await savePersistentGroupSettings(groupId);
-
-          let response =
-            "╭━━━〔 🛡️ ANTI-BOT SIGNATURES 〕━━━╮\n\n";
-
-          if (removed.length) {
-            response +=
-              `🗑️ *Removed:*\n${removed.map(x => `• ${x}`).join("\n")}\n\n`;
-          }
-
-          if (notFound.length) {
-            response +=
-              `⚠️ *Not found:*\n${notFound.map(x => `• ${x}`).join("\n")}\n\n`;
-          }
-
-          response += "╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━╯";
-
-          await sock.sendMessage(groupId, { text: response });
-          return;
-        }
-
-        // AntiBot ON
-        if (option === "on") {
-          antiBotGroups[groupId] = true;
-          await savePersistentGroupSettings(groupId);
-
-          await sock.sendMessage(groupId, {
-            text:
-              "╭━━━〔 🤖 ANTI-BOT 〕━━━╮\n\n" +
-              "📡 Status: *ON* ✅\n" +
-              `🛡️ Signatures: *${antiBotSignatures.length}*\n` +
-              "🗑️ Action: *Delete + Warn*\n" +
-              "🚫 3 violations = *Kick*\n\n" +
-              "╰━━━━━━━━━━━━━━━━━━━━╯"
-          });
-          return;
-        }
-
-        // AntiBot OFF
-        if (option === "off") {
-          delete antiBotGroups[groupId];
-          await savePersistentGroupSettings(groupId);
-
-          await sock.sendMessage(groupId, {
-            text: "❌ *AntiBot disabled for this group.*"
-          });
-          return;
-        }
-
-        // STATUS
-        if (option === "stats" || option === "status") {
-          const signatures =
-            antiBotSignatures.length
-              ? antiBotSignatures.map((x, i) => `${i + 1}. ${x}`).join("\n")
-              : "None";
-
-          const whitelist =
-            antiBotWhitelist.length
-              ? antiBotWhitelist.map(x => `• ${x}`).join("\n")
-              : "None";
-
-          await sock.sendMessage(groupId, {
-            text:
-              "╭━━━〔 🛡️ ANTI-BOT STATS 〕━━━╮\n\n" +
-              `📡 Status: ${antiBotGroups[groupId] ? "*ON* ✅" : "*OFF* ❌"}\n` +
-              `📊 Signatures: *${antiBotSignatures.length}*\n\n` +
-              "🚨 *SUSPECTED WORDS:*\n" +
-              `${signatures}\n\n` +
-              "🟢 *WHITELISTED:*\n" +
-              `${whitelist}\n\n` +
-              "⚔️ Action: *Delete + Warn*\n" +
-              "☠️ 3 violations: *Kick*\n\n" +
-              "╰━━━━━━━━━━━━━━━━━━━━━━━━━━╯"
-          });
-          return;
-        }
-
-        // HELP
-        await sock.sendMessage(groupId, {
-          text:
-            "╭━━━〔 🛡️ ANTI-BOT CONTROL 〕━━━╮\n\n" +
-            `• ${PREFIX}abs on\n` +
-            `• ${PREFIX}abs off\n` +
-            `• ${PREFIX}abs stats\n` +
-            `• ${PREFIX}abs add ping,hack,eval\n` +
-            `• ${PREFIX}abs remove ping,hack\n\n` +
-            "👑 Owner/Sudo only\n" +
-            "╰━━━━━━━━━━━━━━━━━━━━━━━━━━╯"
-        });
-
-        return;
-      }
 
       // Ignore single dot or empty command - BUT allow sticker messages and group messages through (for anti-* enforcement)
       if ((command === "" || command === ".") && !hasStickerMessage && !isGroup) return;
@@ -3924,196 +3193,6 @@ console.log('MESSAGE TYPE:', Object.keys(message.message || {}));
         }
 
         // ============================================
-        // 🤖 ANTI-BOT ENFORCEMENT
-        // Confirmed signatures = aggressive detection
-        // ============================================
-        if (
-          isGroup &&
-          antiBotGroups[message.key.remoteJid] &&
-          !isAdmin &&
-          !canUseAsOwner &&
-          !message.key.fromMe
-        ) {
-          const groupId = message.key.remoteJid;
-          const rawBotText = String(text || "").trim();
-
-          // Normalize message.
-          const normalizedBotText = rawBotText
-            .toLowerCase()
-            .replace(/\s+/g, " ")
-            .trim();
-
-          // Remove emoji/symbol prefixes.
-          // Examples:
-          // .vv !vv ?vv 🔥vv 😈.vv2
-          const compactBotText = normalizedBotText.replace(
-            /^[^\p{L}\p{N}]+/u,
-            ""
-          );
-
-          // ============================================
-          // 🟢 LEGITIMATE COMMAND WHITELIST
-          // ============================================
-          const firstBotWord =
-            compactBotText.split(/\s+/)[0] || "";
-
-          const isWhitelistedBotCommand =
-            antiBotWhitelist.some((word) => {
-              const cleanWord = String(word)
-                .toLowerCase()
-                .trim();
-
-              if (!cleanWord) return false;
-
-              const escapedWord = cleanWord.replace(
-                /[.*+?^${}()|[\]\\]/g,
-                "\\$&"
-              );
-
-              return (
-                firstBotWord === cleanWord ||
-                new RegExp(
-                  `^${escapedWord}[0-9]+$`,
-                  "i"
-                ).test(firstBotWord)
-              );
-            });
-
-          let matchedSignature = null;
-
-          // ============================================
-          // 🚨 CONFIRMED BOT COMMAND DETECTION
-          // ============================================
-          if (!isWhitelistedBotCommand && compactBotText) {
-            for (const signature of antiBotSignatures) {
-              const cleanSignature = String(signature)
-                .toLowerCase()
-                .trim();
-
-              if (!cleanSignature) continue;
-
-              const escapedSignature =
-                cleanSignature.replace(
-                  /[.*+?^${}()|[\]\\]/g,
-                  "\\$&"
-                );
-
-              // Detect:
-              // vv, vv2, vv123
-              // hidetag, hidetag2
-              // tagall, tagall2
-              // menu, menu2
-              const commandRegex = new RegExp(
-                `^${escapedSignature}(?:[0-9]+)?(?:\\s|$)`,
-                "i"
-              );
-
-              if (commandRegex.test(compactBotText)) {
-                matchedSignature = cleanSignature;
-                break;
-              }
-
-              // Detect symbols/prefixes attached to command.
-              // .vv, !vv, ?vv, 🔥vv, 😈.vv2
-              const prefixedCommandRegex = new RegExp(
-                `^[^\\p{L}\\p{N}]*${escapedSignature}(?:[0-9]+)?(?:\\s|$)`,
-                "iu"
-              );
-
-              if (
-                prefixedCommandRegex.test(
-                  normalizedBotText
-                )
-              ) {
-                matchedSignature = cleanSignature;
-                break;
-              }
-            }
-          }
-
-          // ============================================
-          // 🛑 VIOLATION
-          // ============================================
-          if (matchedSignature) {
-            const userNumber = sender.split("@")[0];
-
-            if (!antiBotWarnings[groupId]) {
-              antiBotWarnings[groupId] = {};
-            }
-
-            if (!antiBotWarnings[groupId][sender]) {
-              antiBotWarnings[groupId][sender] = 0;
-            }
-
-            antiBotWarnings[groupId][sender]++;
-
-            // Sync AntiBot warnings with the normal warning system
-            // so .warn / .unwarn can manage AntiBot warnings too.
-            if (!userWarns[groupId]) userWarns[groupId] = {};
-            if (!userWarns[groupId][sender]) userWarns[groupId][sender] = 0;
-            userWarns[groupId][sender]++;
-
-            const warningCount =
-              antiBotWarnings[groupId][sender];
-
-            // Delete confirmed bot command immediately.
-            try {
-              await sock.sendMessage(groupId, {
-                delete: message.key
-              });
-            } catch (err) {
-              logger.error(
-                { error: err.message },
-                "Failed to delete AntiBot message"
-              );
-            }
-
-            saveData();
-
-            await sock.sendMessage(groupId, {
-              text:
-                "╭━━━〔 🤖 ANTI-BOT 〕━━━╮\n\n" +
-                `👤 @${userNumber}\n` +
-                `🚨 Detected: *${matchedSignature}*\n` +
-                `⚠️ Warning: *${warningCount}/3*\n\n` +
-                "🗑️ Message deleted.\n" +
-                "❌ Bot commands are not allowed here.\n\n" +
-                "╰━━━━━━━━━━━━━━━━━━━━╯",
-              mentions: [sender]
-            });
-
-            // ============================================
-            // ☠️ 3 VIOLATIONS = KICK
-            // ============================================
-            if (warningCount >= 3) {
-              try {
-                await sock.groupParticipantsUpdate(
-                  groupId,
-                  [sender],
-                  "remove"
-                );
-
-                await sock.sendMessage(groupId, {
-                  text:
-                    `🚫 @${userNumber} was removed after 3 AntiBot violations.`,
-                  mentions: [sender]
-                });
-
-                delete antiBotWarnings[groupId][sender];
-                saveData();
-              } catch (err) {
-                logger.error(
-                  { error: err.message },
-                  "Failed to kick AntiBot violator"
-                );
-              }
-            }
-
-            return;
-          }
-        }
-
-        // ============================================
         // Anti-Tag Enforcement (prevent tagging all members)
         // ============================================
         const antiTagAction = antiTagGroups[message.key.remoteJid];
@@ -4252,21 +3331,13 @@ console.log('MESSAGE TYPE:', Object.keys(message.message || {}));
 
         const canUseBot = canUseAsOwner || (botMode === "public");
 
-        const expPublicCommands =
-          isGroup &&
-          expEnabled[message.key.remoteJid] &&
-          ["rank", "level", "top", "expleaderboard"].includes(command);
-
-        const canUseExpCommand =
-          canUseAsOwner || canUseBot || expPublicCommands;
-
         // Non-command group messages should return after anti-* enforcement
         // But allow sticker messages through for sticker command detection
         if ((!text || !text.startsWith(PREFIX)) && !hasStickerMessage) return;
 
         // Silent return for non-authorized users in private mode
         // Allow ONLY owner/sudo to use commands when in private mode
-        if (!canUseExpCommand && text && text.startsWith(PREFIX)) {
+        if (!canUseBot && text && text.startsWith(PREFIX)) {
           logger.debug({ command, sender, botMode }, 'Non-owner attempted command in private mode - ignoring');
           return;
         }
@@ -4386,110 +3457,6 @@ Current Prefix: ${PREFIX}
   return;
 }
 
-        // ==================================================
-        // 🚫 DM BLOCKER — DM ONLY
-        // ==================================================
-
-        if (command === "dmblocker" && canUseDM) {
-
-          const option = args[0]?.toLowerCase();
-
-          if (option === "on") {
-
-            dmBlockerEnabled = true;
-            saveData();
-
-            await sock.sendMessage(message.key.remoteJid, {
-              text: `╭━━━〔 🚫 DM BLOCKER 〕━━━╮
-
-📡 Status: *ON* ✅
-🛡️ Unauthorized DMs will be blocked.
-
-╰━━━━━━━━━━━━━━━━━━━━╯`
-            });
-
-            return;
-          }
-
-          if (option === "off") {
-
-            dmBlockerEnabled = false;
-            saveData();
-
-            await sock.sendMessage(message.key.remoteJid, {
-              text: `╭━━━〔 🚫 DM BLOCKER 〕━━━╮
-
-📡 Status: *OFF* ❌
-
-╰━━━━━━━━━━━━━━━━━━━━╯`
-            });
-
-            return;
-          }
-
-          await sock.sendMessage(message.key.remoteJid, {
-            text: `❌ Usage:
-
-.dmblocker on
-.dmblocker off`
-          });
-
-          return;
-        }
-
-        // ==================================================
-        // ✏️ .DMB MSG — DM ONLY
-        // ==================================================
-
-        if (command === "dmb" && canUseDM) {
-
-          if (args[0]?.toLowerCase() !== "msg") {
-
-            await sock.sendMessage(message.key.remoteJid, {
-              text: `❌ Usage:
-
-.dmb msg your message
-
-Current message:
-${dmBlockerMessage}`
-            });
-
-            return;
-          }
-
-          const newMessage =
-            args.slice(1).join(" ").trim();
-
-          if (!newMessage) {
-
-            await sock.sendMessage(message.key.remoteJid, {
-              text: `❌ Usage:
-
-.dmb msg your message
-
-Current message:
-${dmBlockerMessage}`
-            });
-
-            return;
-          }
-
-          dmBlockerMessage = newMessage;
-          saveData();
-
-          await sock.sendMessage(message.key.remoteJid, {
-            text: `╭━━━〔 ✏️ DM BLOCK MESSAGE 〕━━━╮
-
-✅ Message updated.
-
-💬 ${dmBlockerMessage}
-
-╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━╯`
-          });
-
-          return;
-        }
-
         if (command === "ping") {
           const now = Date.now();
           await sock.sendMessage(message.key.remoteJid, {
@@ -4564,7 +3531,6 @@ if (command === "exp") {
   if (option === "enable") {
     expEnabled[groupJid] = true;
     saveData();
-    await saveGroupSettingsToSupabase(groupJid);
 
     await sock.sendMessage(groupJid, {
       text:
@@ -4580,7 +3546,6 @@ if (command === "exp") {
   if (option === "disable") {
     delete expEnabled[groupJid];
     saveData();
-    await saveGroupSettingsToSupabase(groupJid);
 
     await sock.sendMessage(groupJid, {
       text:
@@ -6202,7 +5167,7 @@ const option = args[0]?.toLowerCase();
 if (option === "on") {
   if (!nightModeGroups.includes(message.key.remoteJid)) {
     nightModeGroups.push(message.key.remoteJid);
-    await savePersistentGroupSettings(message.key.remoteJid);
+    saveData();
 
     logger.info(
       { groups: nightModeGroups },
@@ -6222,7 +5187,7 @@ if (option === "off") {
 
   if (index !== -1) {
     nightModeGroups.splice(index, 1);
-    await savePersistentGroupSettings(message.key.remoteJid);
+    saveData();
 
     logger.info(
       { groups: nightModeGroups },
@@ -6250,7 +5215,7 @@ if (option === "off") {
 
   if (option === "on") {
     activityTracking[groupId] = true;
-    await savePersistentGroupSettings(groupId);
+    saveData();
 
     logger.info(
       { groupId },
@@ -6265,7 +5230,7 @@ if (option === "off") {
 
   if (option === "off") {
     delete activityTracking[groupId];
-    await savePersistentGroupSettings(groupId);
+    saveData();
 
     logger.info(
       { groupId },
@@ -6620,320 +5585,6 @@ if (command === "kick") {
           return;
         }
 
-        // ==================================================
-        // 🚫 .BANN / .BANN2
-        // ==================================================
-
-        if (
-          command === "bann" ||
-          command === "bann2"
-        ) {
-
-          const groupId =
-            message.key.remoteJid;
-
-          if (!isGroup) {
-            await sock.sendMessage(groupId, {
-              text:
-                "❌ This command only works in groups."
-            });
-            return;
-          }
-
-          let targetJid = null;
-
-          const mentions =
-            message.message
-              .extendedTextMessage
-              ?.contextInfo
-              ?.mentionedJid;
-
-          if (
-            mentions &&
-            mentions.length > 0
-          ) {
-
-            targetJid = mentions[0];
-
-          } else {
-
-            const context =
-              message.message
-                .extendedTextMessage
-                ?.contextInfo;
-
-            if (context?.participant) {
-              targetJid =
-                context.participant;
-            }
-          }
-
-          if (!targetJid) {
-            await sock.sendMessage(groupId, {
-              text:
-                "❌ Reply to or mention the user you want to ban."
-            });
-            return;
-          }
-
-          if (!bannedUsers[groupId]) {
-            bannedUsers[groupId] = {};
-          }
-
-          const mode =
-            command === "bann"
-              ? "bann"
-              : "bann2";
-
-          bannedUsers[groupId][targetJid] = {
-            mode,
-            bannedAt:
-              new Date().toISOString(),
-            bannedBy:
-              message.key.participant ||
-              message.key.remoteJid
-          };
-
-          // Save locally + Supabase
-          saveData();
-          await saveGroupSettingsToSupabase(groupId);
-
-          // .bann = remove immediately
-          // .bann2 = register only; do not remove immediately
-          if (mode === "bann") {
-            try {
-              await sock.groupParticipantsUpdate(
-                groupId,
-                [targetJid],
-                "remove"
-              );
-            } catch (err) {
-              logger.error(
-                {
-                  target: targetJid,
-                  error: err.message
-                },
-                "Failed to kick banned user"
-              );
-            }
-          }
-
-          const banText =
-            mode === "bann"
-              ? `╭━━━〔 🚫 USER BANNED 〕━━━╮
-
-👤 @${targetJid.split("@")[0]}
-🔒 Type: *BANN*
-🚫 They were removed and cannot return to this group.
-
-╰━━━━━━━━━━━━━━━━━━━━╯`
-              : `╭━━━〔 🚫 USER REGISTERED 〕━━━╮
-
-👤 @${targetJid.split("@")[0]}
-🔒 Type: *BANN2*
-📝 User registered on the group's ban list.
-🚫 They will be blocked from returning.
-
-╰━━━━━━━━━━━━━━━━━━━━╯`;
-
-          await sock.sendMessage(groupId, {
-            text: banText,
-            mentions: [targetJid]
-          });
-
-          return;
-        }
-
-
-        // ==================================================
-        // ♻️ .UNBANN
-        // .unbann 234xxxxxxxxxx
-        // ==================================================
-
-        if (command === "unbann") {
-
-          const groupId =
-            message.key.remoteJid;
-
-          if (!isGroup) {
-            await sock.sendMessage(groupId, {
-              text:
-                "❌ This command only works in groups."
-            });
-            return;
-          }
-
-          const number =
-            args
-              .join("")
-              .replace(/[^\d]/g, "");
-
-          if (!number) {
-            await sock.sendMessage(groupId, {
-              text:
-                "❌ Usage:\\n" +
-                ".unbann 234xxxxxxxxxx"
-            });
-            return;
-          }
-
-          const groupBans =
-            bannedUsers[groupId] || {};
-
-          const targetJid =
-            Object.keys(groupBans).find(
-              jid =>
-                jid.split("@")[0] === number
-            );
-
-          if (!targetJid) {
-            await sock.sendMessage(groupId, {
-              text:
-                `ℹ️ ${number} is not banned in this group.`
-            });
-            return;
-          }
-
-          delete groupBans[targetJid];
-
-          if (
-            Object.keys(groupBans).length === 0
-          ) {
-            delete bannedUsers[groupId];
-          }
-
-          saveData();
-          await saveGroupSettingsToSupabase(groupId);
-
-          await sock.sendMessage(groupId, {
-            text:
-`╭━━━〔 ♻️ UNBANNED 〕━━━╮
-
-👤 @${number}
-✅ User can now be added/join again.
-
-╰━━━━━━━━━━━━━━━━━━━━╯`
-          });
-
-          return;
-        }
-
-
-        // ==================================================
-        // 📋 .LIST BANNED
-        // ==================================================
-
-        if (
-          command === "list" &&
-          args[0]?.toLowerCase() === "banned"
-        ) {
-
-          const groupId =
-            message.key.remoteJid;
-
-          if (!isGroup) {
-            await sock.sendMessage(groupId, {
-              text:
-                "❌ This command only works in groups."
-            });
-            return;
-          }
-
-          const groupBans =
-            bannedUsers[groupId] || {};
-
-          const entries =
-            Object.entries(groupBans);
-
-          if (entries.length === 0) {
-
-            await sock.sendMessage(groupId, {
-              text:
-                `╭━━━〔 🚫 BANNED USERS 〕━━━╮
-
-📭 No banned users in this group.
-
-╰━━━━━━━━━━━━━━━━━━━━━━━━╯`
-            });
-
-            return;
-          }
-
-          let text =
-            `╭━━━〔 🚫 BANNED USERS 〕━━━╮
-
-`;
-
-          entries.forEach(
-            ([jid, info], index) => {
-
-              text +=
-                `${index + 1}. @${jid.split("@")[0]}
-   🔒 ${(info.mode || "bann").toUpperCase()}
-
-`;
-            }
-          );
-
-          text +=
-            "╰━━━━━━━━━━━━━━━━━━━━━━━━╯";
-
-          await sock.sendMessage(groupId, {
-            text,
-            mentions:
-              entries.map(
-                ([jid]) => jid
-              )
-          });
-
-          return;
-        }
-
-
-        // ==================================================
-        // ♻️ .RESET BANNED
-        // ==================================================
-
-        if (
-          command === "reset" &&
-          args[0]?.toLowerCase() === "banned"
-        ) {
-
-          const groupId =
-            message.key.remoteJid;
-
-          if (!isGroup) {
-            await sock.sendMessage(groupId, {
-              text:
-                "❌ This command only works in groups."
-            });
-            return;
-          }
-
-          const count =
-            Object.keys(
-              bannedUsers[groupId] || {}
-            ).length;
-
-          delete bannedUsers[groupId];
-
-          saveData();
-          await saveGroupSettingsToSupabase(groupId);
-
-          await sock.sendMessage(groupId, {
-            text:
-`╭━━━〔 ♻️ BAN RESET 〕━━━╮
-
-🗑️ Removed *${count}* banned user(s).
-✅ The group's ban list has been reset.
-
-╰━━━━━━━━━━━━━━━━━━━━╯`
-          });
-
-          return;
-        }
-
-
         if (command === "warn") {
           let targetJid = null;
           
@@ -7022,22 +5673,9 @@ if (command === "kick") {
           }
 
           const warnCount = userWarns[groupId][targetJid];
-
-      // Sync .unwarn with AntiBot warnings
-      userWarns[groupId][targetJid]--;
-
-      if (
-        antiBotWarnings[groupId] &&
-        antiBotWarnings[groupId][targetJid] > 0
-      ) {
-        antiBotWarnings[groupId][targetJid]--;
-
-        if (antiBotWarnings[groupId][targetJid] <= 0) {
-          delete antiBotWarnings[groupId][targetJid];
-        }
-      }
-
-      if (userWarns[groupId][targetJid] <= 0) {
+          userWarns[groupId][targetJid]--;
+          
+          if (userWarns[groupId][targetJid] <= 0) {
             delete userWarns[groupId][targetJid];
             await sock.sendMessage(message.key.remoteJid, {
               text: `✅ @${targetJid.split("@")[0]} warnings cleared.`,
@@ -7264,7 +5902,7 @@ if (command === "kick") {
           } else {
             antiPhotoGroups[message.key.remoteJid] = action;
           }
-          await savePersistentGroupSettings(message.key.remoteJid);
+          saveData();
 
           await sock.sendMessage(message.key.remoteJid, {
             text: action === "off" ? "❌ Anti-Photo disabled." : `✅ Anti-Photo enabled (*${action}*).`,
@@ -7299,7 +5937,7 @@ if (command === "kick") {
           } else {
             antiStatusGroups[message.key.remoteJid] = action;
           }
-          await savePersistentGroupSettings(message.key.remoteJid);
+          saveData();
 
           await sock.sendMessage(message.key.remoteJid, {
             text: action === "off" ? "❌ Anti-Status disabled." : `✅ Anti-Status enabled (*${action}*).`,
@@ -7334,7 +5972,7 @@ if (command === "kick") {
           } else {
             antiTagGroups[message.key.remoteJid] = action;
           }
-          await savePersistentGroupSettings(message.key.remoteJid);
+          saveData();
 
           await sock.sendMessage(message.key.remoteJid, {
             text: action === "off" ? "❌ Anti-Tag disabled." : `✅ Anti-Tag enabled (*${action}*).`,
@@ -7369,7 +6007,7 @@ if (command === "kick") {
           } else {
             antiSpamGroups[message.key.remoteJid] = action;
           }
-          await savePersistentGroupSettings(message.key.remoteJid);
+          saveData();
 
           await sock.sendMessage(message.key.remoteJid, {
             text: action === "off" ? "❌ Anti-Spam disabled." : `✅ Anti-Spam enabled (*${action}*).`,
@@ -7398,7 +6036,7 @@ if (command === "kick") {
 
           // Save the custom welcome message for this group
           customWelcomeMessages[message.key.remoteJid] = welcomeText;
-          await savePersistentGroupSettings(message.key.remoteJid);
+          saveData(); // Persist to JSON
 
           await sock.sendMessage(message.key.remoteJid, {
             text: `✅ Welcome message set!\n\n_Preview placeholders:_\n• {user} → @mention\n• {username} → username\n• {groupname} → group name\n• {desc} → group description\n• {membercount} → member count\n• {grppp} → group profile picture\n• {userpp} → new member's profile picture`,
@@ -7428,7 +6066,7 @@ if (command === "kick") {
 
           // Remove custom welcome message
           delete customWelcomeMessages[message.key.remoteJid];
-          await savePersistentGroupSettings(message.key.remoteJid);
+          saveData(); // Persist to JSON
 
           await sock.sendMessage(message.key.remoteJid, {
             text: `Welcome message reset to default.`,
@@ -7458,7 +6096,7 @@ if (command === "kick") {
 
           const isOn = action === "on";
           welcomeEnabled[message.key.remoteJid] = isOn;
-          await savePersistentGroupSettings(message.key.remoteJid);
+          saveData();
 
           await sock.sendMessage(message.key.remoteJid, {
             text: isOn ? "✅ Welcome messages enabled for this group." : "❌ Welcome messages disabled for this group.",
@@ -7487,7 +6125,7 @@ if (command === "kick") {
 
           const isOn = action === "on";
           goodbyeEnabled[message.key.remoteJid] = isOn;
-          await savePersistentGroupSettings(message.key.remoteJid);
+          saveData();
 
           await sock.sendMessage(message.key.remoteJid, {
             text: isOn ? "✅ Goodbye messages enabled for this group." : "❌ Goodbye messages disabled for this group.",
@@ -7514,7 +6152,7 @@ if (command === "kick") {
           }
 
           customGoodbyeMessages[message.key.remoteJid] = goodbyeText;
-          await savePersistentGroupSettings(message.key.remoteJid);
+          saveData();
 
           await sock.sendMessage(message.key.remoteJid, {
             text: `✅ Goodbye message set!\n\n_Preview placeholders:_\n• {user} → @mention\n• {username} → username\n• {groupname} → group name\n• {desc} → group description\n• {membercount} → member count\n• {grppp} → group profile picture\n• {userpp} → member's profile picture`,
@@ -7543,7 +6181,7 @@ if (command === "kick") {
           }
 
           delete customGoodbyeMessages[message.key.remoteJid];
-          await savePersistentGroupSettings(message.key.remoteJid);
+          saveData();
 
           await sock.sendMessage(message.key.remoteJid, {
             text: `Goodbye message reset to default.`,

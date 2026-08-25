@@ -4386,110 +4386,6 @@ Current Prefix: ${PREFIX}
   return;
 }
 
-        // ==================================================
-        // 🚫 DM BLOCKER — DM ONLY
-        // ==================================================
-
-        if (command === "dmblocker" && canUseDM) {
-
-          const option = args[0]?.toLowerCase();
-
-          if (option === "on") {
-
-            dmBlockerEnabled = true;
-            saveData();
-
-            await sock.sendMessage(message.key.remoteJid, {
-              text: `╭━━━〔 🚫 DM BLOCKER 〕━━━╮
-
-📡 Status: *ON* ✅
-🛡️ Unauthorized DMs will be blocked.
-
-╰━━━━━━━━━━━━━━━━━━━━╯`
-            });
-
-            return;
-          }
-
-          if (option === "off") {
-
-            dmBlockerEnabled = false;
-            saveData();
-
-            await sock.sendMessage(message.key.remoteJid, {
-              text: `╭━━━〔 🚫 DM BLOCKER 〕━━━╮
-
-📡 Status: *OFF* ❌
-
-╰━━━━━━━━━━━━━━━━━━━━╯`
-            });
-
-            return;
-          }
-
-          await sock.sendMessage(message.key.remoteJid, {
-            text: `❌ Usage:
-
-.dmblocker on
-.dmblocker off`
-          });
-
-          return;
-        }
-
-        // ==================================================
-        // ✏️ .DMB MSG — DM ONLY
-        // ==================================================
-
-        if (command === "dmb" && canUseDM) {
-
-          if (args[0]?.toLowerCase() !== "msg") {
-
-            await sock.sendMessage(message.key.remoteJid, {
-              text: `❌ Usage:
-
-.dmb msg your message
-
-Current message:
-${dmBlockerMessage}`
-            });
-
-            return;
-          }
-
-          const newMessage =
-            args.slice(1).join(" ").trim();
-
-          if (!newMessage) {
-
-            await sock.sendMessage(message.key.remoteJid, {
-              text: `❌ Usage:
-
-.dmb msg your message
-
-Current message:
-${dmBlockerMessage}`
-            });
-
-            return;
-          }
-
-          dmBlockerMessage = newMessage;
-          saveData();
-
-          await sock.sendMessage(message.key.remoteJid, {
-            text: `╭━━━〔 ✏️ DM BLOCK MESSAGE 〕━━━╮
-
-✅ Message updated.
-
-💬 ${dmBlockerMessage}
-
-╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━╯`
-          });
-
-          return;
-        }
-
         if (command === "ping") {
           const now = Date.now();
           await sock.sendMessage(message.key.remoteJid, {
@@ -6698,46 +6594,33 @@ if (command === "kick") {
           saveData();
           await saveGroupSettingsToSupabase(groupId);
 
-          // .bann = remove immediately
-          // .bann2 = register only; do not remove immediately
-          if (mode === "bann") {
-            try {
-              await sock.groupParticipantsUpdate(
-                groupId,
-                [targetJid],
-                "remove"
-              );
-            } catch (err) {
-              logger.error(
-                {
-                  target: targetJid,
-                  error: err.message
-                },
-                "Failed to kick banned user"
-              );
-            }
+          // Kick immediately
+          try {
+
+            await sock.groupParticipantsUpdate(
+              groupId,
+              [targetJid],
+              "remove"
+            );
+
+          } catch (err) {
+
+            logger.error(
+              {
+                target: targetJid,
+                error: err.message
+              },
+              "Failed to kick banned user"
+            );
           }
 
-          const banText =
-            mode === "bann"
-              ? `╭━━━〔 🚫 USER BANNED 〕━━━╮
-
-👤 @${targetJid.split("@")[0]}
-🔒 Type: *BANN*
-🚫 They were removed and cannot return to this group.
-
-╰━━━━━━━━━━━━━━━━━━━━╯`
-              : `╭━━━〔 🚫 USER REGISTERED 〕━━━╮
-
-👤 @${targetJid.split("@")[0]}
-🔒 Type: *BANN2*
-📝 User registered on the group's ban list.
-🚫 They will be blocked from returning.
-
-╰━━━━━━━━━━━━━━━━━━━━╯`;
-
           await sock.sendMessage(groupId, {
-            text: banText,
+            text:
+              "╭━━━〔 🚫 USER BANNED 〕━━━╮\\n\\n" +
+              `👤 @${targetJid.split("@")[0]}\\n` +
+              `🔒 Type: *${mode.toUpperCase()}*\\n` +
+              "🚫 They cannot return to this group.\\n\\n" +
+              "╰━━━━━━━━━━━━━━━━━━━━╯",
             mentions: [targetJid]
           });
 
@@ -6807,12 +6690,10 @@ if (command === "kick") {
 
           await sock.sendMessage(groupId, {
             text:
-`╭━━━〔 ♻️ UNBANNED 〕━━━╮
-
-👤 @${number}
-✅ User can now be added/join again.
-
-╰━━━━━━━━━━━━━━━━━━━━╯`
+              "╭━━━〔 ♻️ UNBANNED 〕━━━╮\\n\\n" +
+              `👤 @${number}\\n` +
+              "✅ User can now be added/join again.\\n\\n" +
+              "╰━━━━━━━━━━━━━━━━━━━━╯"
           });
 
           return;
@@ -6849,29 +6730,23 @@ if (command === "kick") {
 
             await sock.sendMessage(groupId, {
               text:
-                `╭━━━〔 🚫 BANNED USERS 〕━━━╮
-
-📭 No banned users in this group.
-
-╰━━━━━━━━━━━━━━━━━━━━━━━━╯`
+                "╭━━━〔 🚫 BANNED USERS 〕━━━╮\\n\\n" +
+                "📭 No banned users in this group.\\n\\n" +
+                "╰━━━━━━━━━━━━━━━━━━━━━━━━╯"
             });
 
             return;
           }
 
           let text =
-            `╭━━━〔 🚫 BANNED USERS 〕━━━╮
-
-`;
+            "╭━━━〔 🚫 BANNED USERS 〕━━━╮\\n\\n";
 
           entries.forEach(
             ([jid, info], index) => {
 
               text +=
-                `${index + 1}. @${jid.split("@")[0]}
-   🔒 ${(info.mode || "bann").toUpperCase()}
-
-`;
+                `${index + 1}. @${jid.split("@")[0]}\\n` +
+                `   🔒 ${info.mode || "bann"}\\n\\n`;
             }
           );
 
@@ -6922,13 +6797,140 @@ if (command === "kick") {
 
           await sock.sendMessage(groupId, {
             text:
-`╭━━━〔 ♻️ BAN RESET 〕━━━╮
-
-🗑️ Removed *${count}* banned user(s).
-✅ The group's ban list has been reset.
-
-╰━━━━━━━━━━━━━━━━━━━━╯`
+              "╭━━━〔 ♻️ BAN RESET 〕━━━╮\\n\\n" +
+              `🗑️ Removed *${count}* banned user(s).\\n` +
+              "✅ The group's ban list has been reset.\\n\\n" +
+              "╰━━━━━━━━━━━━━━━━━━━━╯"
           });
+
+          return;
+        }
+
+
+        // ==================================================
+        // 🚫 DM BLOCKER
+        // ==================================================
+
+        if (command === "dmblocker") {
+
+          if (!isDM) {
+            await sock.sendMessage(
+              message.key.remoteJid,
+              {
+                text:
+                  "❌ Use this command in DM."
+              }
+            );
+            return;
+          }
+
+          if (!canUseDM) {
+            return;
+          }
+
+          const option =
+            args[0]?.toLowerCase();
+
+          if (option === "on") {
+
+            dmBlockerEnabled = true;
+            saveData();
+
+            await sock.sendMessage(
+              message.key.remoteJid,
+              {
+                text:
+                  "╭━━━〔 🚫 DM BLOCKER 〕━━━╮\\n\\n" +
+                  "📡 Status: *ON* ✅\\n" +
+                  "🛡️ Unauthorized DMs will be blocked.\\n\\n" +
+                  "╰━━━━━━━━━━━━━━━━━━━━╯"
+              }
+            );
+
+            return;
+          }
+
+          if (option === "off") {
+
+            dmBlockerEnabled = false;
+            saveData();
+
+            await sock.sendMessage(
+              message.key.remoteJid,
+              {
+                text:
+                  "╭━━━〔 🚫 DM BLOCKER 〕━━━╮\\n\\n" +
+                  "📡 Status: *OFF* ❌\\n\\n" +
+                  "╰━━━━━━━━━━━━━━━━━━━━╯"
+              }
+            );
+
+            return;
+          }
+
+          await sock.sendMessage(
+            message.key.remoteJid,
+            {
+              text:
+                "❌ Usage:\\n" +
+                ".dmblocker on\\n" +
+                ".dmblocker off"
+            }
+          );
+
+          return;
+        }
+
+
+        // ==================================================
+        // ✏️ .DMB MSG
+        // ==================================================
+
+        if (
+          command === "dmb" &&
+          args[0]?.toLowerCase() === "msg"
+        ) {
+
+          if (!canUseDM) {
+            return;
+          }
+
+          const newMessage =
+            args
+              .slice(1)
+              .join(" ")
+              .trim();
+
+          if (!newMessage) {
+
+            await sock.sendMessage(
+              message.key.remoteJid,
+              {
+                text:
+                  "❌ Usage:\\n" +
+                  ".dmb msg your message\\n\\n" +
+                  `Current message:\\n${dmBlockerMessage}`
+              }
+            );
+
+            return;
+          }
+
+          dmBlockerMessage =
+            newMessage;
+
+          saveData();
+
+          await sock.sendMessage(
+            message.key.remoteJid,
+            {
+              text:
+                "╭━━━〔 ✏️ DM BLOCK MESSAGE 〕━━━╮\\n\\n" +
+                "✅ Message updated.\\n\\n" +
+                `💬 ${dmBlockerMessage}\\n\\n` +
+                "╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━╯"
+            }
+          );
 
           return;
         }
