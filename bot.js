@@ -4395,7 +4395,7 @@ Current Prefix: ${PREFIX}
         // 🚫 DM BLOCKER — DM ONLY
         // ==================================================
 
-        if (command === "dmblocker" && canUseDM) {
+        if (command === "dmblocker" && canUseAsOwner) {
 
           const option = args[0]?.toLowerCase();
 
@@ -4446,7 +4446,7 @@ Current Prefix: ${PREFIX}
         // ✏️ .DMB MSG — DM ONLY
         // ==================================================
 
-        if (command === "dmb" && canUseDM) {
+        if (command === "dmb" && canUseAsOwner) {
 
           if (args[0]?.toLowerCase() !== "msg") {
 
@@ -6757,72 +6757,190 @@ if (command === "kick") {
 
         if (command === "unbann") {
 
-          const groupId =
-            message.key.remoteJid;
+          const groupId = message.key.remoteJid;
 
           if (!isGroup) {
             await sock.sendMessage(groupId, {
-              text:
-                "❌ This command only works in groups."
+              text: "❌ This command only works in groups."
             });
             return;
           }
 
+          const groupBans = bannedUsers[groupId] || {};
+          const banEntries = Object.entries(groupBans);
+
+          if (banEntries.length === 0) {
+            await sock.sendMessage(groupId, {
+              text: "📭 There are no banned users in this group."
+            });
+            return;
+          }
+
+          // --------------------------------------------------
+          // Get target from:
+          // 1. Reply
+          // 2. Mention
+          // 3. Phone number
+          // --------------------------------------------------
+
+          let targetJid = null;
+
+          const context =
+            message.message?.extendedTextMessage?.contextInfo;
+
+          const mentions =
+            context?.mentionedJid || [];
+
+          // Mention
+          if (mentions.length > 0) {
+            targetJid = mentions[0];
+          }
+
+          // Reply
+          if (!targetJid && context?.participant) {
+            targetJid = context.participant;
+          }
+
+          // Phone number
           const number =
             args
               .join("")
               .replace(/[^\d]/g, "");
 
-          if (!number) {
+          // --------------------------------------------------
+          // Helper: normalize phone numbers
+          // --------------------------------------------------
+
+          const normalizeNumber = (jid) => {
+            if (!jid) return "";
+
+            return String(jid)
+              .split("@")[0]
+              .replace(/[^\d]/g, "");
+          };
+
+          // --------------------------------------------------
+          // Find matching ban
+          // --------------------------------------------------
+
+          let foundJid = null;
+
+          // First: exact JID match
+          if (targetJid && groupBans[targetJid]) {
+            foundJid = targetJid;
+          }
+
+          // Second: compare phone number
+          if (!foundJid && number) {
+            foundJid =
+              banEntries.find(([jid]) => {
+                return normalizeNumber(jid) === number;
+              })?.[0] || null;
+          }
+
+          // --------------------------------------------------
+          // If the stored JID is @lid, try Baileys LID mapping
+          // --------------------------------------------------
+
+          if (!foundJid && number) {
+            for (const [jid] of banEntries) {
+
+              if (!jid.endsWith("@lid")) {
+                continue;
+              }
+
+              try {
+                const mapping =
+                  sock.signalRepository?.lidMapping;
+
+                if (
+                  mapping &&
+                  typeof mapping.getPNForLID === "function"
+                ) {
+
+                  const pn =
+                    await mapping.getPNForLID(jid);
+
+                  if (
+                    pn &&
+                    normalizeNumber(pn) === number
+                  ) {
+                    foundJid = jid;
+                    break;
+                  }
+                }
+
+              } catch (err) {
+                logger.warn(
+                  {
+                    lid: jid,
+                    error: err.message
+                  },
+                  "Could not resolve LID to phone number"
+                );
+              }
+            }
+          }
+
+          // --------------------------------------------------
+          // Nothing found
+          // --------------------------------------------------
+
+          if (!foundJid) {
+
             await sock.sendMessage(groupId, {
               text:
-                "❌ Usage:\\n" +
-                ".unbann 234xxxxxxxxxx"
+                number
+                  ? `❌ ${number} is not banned in this group.\n\n` +
+                    `💡 If the user was banned using a WhatsApp LID, ` +
+                    `reply to their message and use:\n\n` +
+                    `.unbann`
+                  : "❌ Reply to, mention, or provide the number of the banned user."
             });
+
             return;
           }
 
-          const groupBans =
-            bannedUsers[groupId] || {};
+          // --------------------------------------------------
+          // Remove ban
+          // --------------------------------------------------
 
-          const targetJid =
-            Object.keys(groupBans).find(
-              jid =>
-                jid.split("@")[0] === number
-            );
+          const removedInfo =
+            groupBans[foundJid];
 
-          if (!targetJid) {
-            await sock.sendMessage(groupId, {
-              text:
-                `ℹ️ ${number} is not banned in this group.`
-            });
-            return;
-          }
+          delete groupBans[foundJid];
 
-          delete groupBans[targetJid];
-
-          if (
-            Object.keys(groupBans).length === 0
-          ) {
+          if (Object.keys(groupBans).length === 0) {
             delete bannedUsers[groupId];
           }
 
+          // Save JSON + Supabase
           saveData();
           await saveGroupSettingsToSupabase(groupId);
 
+          const displayNumber =
+            normalizeNumber(foundJid) ||
+            number ||
+            foundJid.split("@")[0];
+
           await sock.sendMessage(groupId, {
             text:
-`╭━━━〔 ♻️ UNBANNED 〕━━━╮
+              `╭━━━〔 ♻️ UNBANNED 〕━━━╮
 
-👤 @${number}
-✅ User can now be added/join again.
+👤 @${displayNumber}
+🔓 Type: *${removedInfo?.mode?.toUpperCase() || "BANN"}*
+✅ User has been removed from this group's ban list.
+📥 They can now be added/join again.
 
-╰━━━━━━━━━━━━━━━━━━━━╯`
+╰━━━━━━━━━━━━━━━━━━━━╯`,
+            mentions:
+              foundJid.endsWith("@s.whatsapp.net")
+                ? [foundJid]
+                : []
           });
 
           return;
         }
-
 
         // ==================================================
         // 📋 .LIST BANNED
