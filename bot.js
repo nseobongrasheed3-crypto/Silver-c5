@@ -1940,6 +1940,8 @@ const getMenu = () => `
 ║ ✅ unblock      
 ║ 🚪 left
 ║ 🚧 antibot
+║ 🚫 bann 
+║ ❌ bann2
 ║ 📥 acceptall    
 ║ ❌ rejectall
 ║ 🌙 nightmode on|off 
@@ -1964,9 +1966,12 @@ const getMenu = () => `
 ║ 📢 antistatus     🏷 antitag
 ║ 🚫 antispam       👥 tagall
 ║ 👤 hidetag        ➕ add
-║ 👋 welcome        👋 goodbye
+║ 👋 welcome 
+║ 👋 goodbye
+║ 🚫📩dmblocker on|off
+║ 🙅📩dmbmsg
 ║ ✍️ setwelcome     ♻️ resetwelcome
-║ ✍️ setgoodbye     ♻️ resetgoodbye
+║ ✍️ setgoodbye ♻️ resetgoodbye
 ╚═══════════════════════════════╝
 
 ╔════════ 🎮 *GAMES* ══════════╗
