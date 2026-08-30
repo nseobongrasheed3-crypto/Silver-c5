@@ -66,7 +66,7 @@ let PREFIX = ".";
 const botStartTime = Date.now();
 
 // Anonymous messaging system
-const ANONYMOUS_WEB_URL = "https://lucaanonym.vercel.app"; // Deployed Vercel URL
+const ANONYMOUS_WEB_URL = "https://silver-anonymous.vercel.app"; // Deployed Vercel URL
 const anonymousSessions = new Map();
 const axios = require('axios');
 const yts = require('yt-search');
