@@ -3123,6 +3123,15 @@ if (message.key.remoteJid.endsWith("@g.us") && !message.key.fromMe) {
           message.key.participant ||
           message.key.remoteJid;
 
+        // Ignore WhatsApp broadcast/system JIDs.
+        // These are not normal users and cannot be blocked.
+        if (
+          senderJid === "status@broadcast" ||
+          senderJid?.endsWith("@broadcast")
+        ) {
+          return;
+        }
+
         const senderNumber =
           senderJid?.split("@")[0];
 
