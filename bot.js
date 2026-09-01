@@ -326,6 +326,112 @@ if (data.groupActivity) {
   }
 };
 
+// ============================================
+// ☁️ GLOBAL SETTINGS — SUPABASE BACKUP
+// ============================================
+
+const saveGlobalSettingsToSupabase = async () => {
+  try {
+    const { error } = await supabase
+      .from("bot_global_settings")
+      .upsert({
+        id: 1,
+        bot_owner: BOT_OWNER,
+        prefix: PREFIX,
+        sudo_users: sudoUsers,
+        dm_blocker_enabled: dmBlockerEnabled,
+        dm_blocker_message: dmBlockerMessage,
+        group_activity: groupActivity,
+        activity_tracking: activityTracking,
+        updated_at: new Date().toISOString()
+      }, {
+        onConflict: "id"
+      });
+
+    if (error) throw error;
+
+    logger.debug("Global bot settings backed up to Supabase");
+
+  } catch (error) {
+
+    logger.error(
+      { error: error.message },
+      "Failed to backup global bot settings to Supabase"
+    );
+
+  }
+};
+
+const loadGlobalSettingsFromSupabase = async () => {
+  try {
+
+    const { data, error } = await supabase
+      .from("bot_global_settings")
+      .select("*")
+      .eq("id", 1)
+      .maybeSingle();
+
+    if (error) throw error;
+
+    if (!data) {
+      logger.info("No global settings found in Supabase");
+      return;
+    }
+
+    if (data.bot_owner) {
+      BOT_OWNER = data.bot_owner;
+    }
+
+    if (data.prefix) {
+      PREFIX = data.prefix;
+    }
+
+    if (Array.isArray(data.sudo_users)) {
+      sudoUsers.length = 0;
+      sudoUsers.push(...data.sudo_users);
+    }
+
+    if (data.dm_blocker_enabled !== undefined) {
+      dmBlockerEnabled = Boolean(data.dm_blocker_enabled);
+    }
+
+    if (typeof data.dm_blocker_message === "string") {
+      dmBlockerMessage = data.dm_blocker_message;
+    }
+
+    if (
+      data.group_activity &&
+      typeof data.group_activity === "object"
+    ) {
+      Object.assign(groupActivity, data.group_activity);
+    }
+
+    if (
+      data.activity_tracking &&
+      typeof data.activity_tracking === "object"
+    ) {
+      Object.assign(activityTracking, data.activity_tracking);
+    }
+
+    logger.info(
+      {
+        prefix: PREFIX,
+        sudoUsers: sudoUsers.length,
+        dmBlockerEnabled
+      },
+      "Global bot settings restored from Supabase"
+    );
+
+  } catch (error) {
+
+    logger.error(
+      { error: error.message },
+      "Failed to load global bot settings from Supabase"
+    );
+
+  }
+};
+
 // Save data to JSON file
 const loadExpFromSupabase = async () => {
   try {
@@ -1051,11 +1157,17 @@ const pollAnonymousMessages = async (sock) => {
         // Guard check to make sure individual message contents exist
         if (!msg || !msg.message) continue;
 
+        // The bot controls anonymous message numbering locally.
+        // Do NOT trust msg.number from the web server because it may
+        // reset to 1 or be missing.
+        session.messageCount++;
+
+        const anonymousNumber = session.messageCount;
+
         await sock.sendMessage(session.groupJid, {
-          text: `┌─────────────────┐\n  *ANON USER #${msg.number || 1}*\n└─────────────────┘\n\n_${msg.message}_\n\n───────────`
+          text: `┌─────────────────┐\n  *ANON USER #${anonymousNumber}*\n└─────────────────┘\n\n_${msg.message}_\n\n───────────`
         });
 
-        session.messageCount = msg.number || session.messageCount + 1;
         session.lastActivity = Date.now();
       }
     } catch (error) {
@@ -2042,6 +2154,9 @@ async function startBot() {
   // Load saved data on startup
   loadData();
 
+  // ☁️ Restore global settings from Supabase
+  await loadGlobalSettingsFromSupabase();
+
   // ☁️ Restore persistent group settings from Supabase
   await loadGroupSettingsFromSupabase();
 
@@ -2985,6 +3100,9 @@ if (message.key.remoteJid.endsWith("@g.us") && !message.key.fromMe) {
   // Auto-save every 20 messages to reduce disk writes
   if (groupActivity[groupId][userId].count % 20 === 0) {
     saveData();
+
+    // ☁️ Backup activity data to Supabase
+    await saveGlobalSettingsToSupabase();
   }
 }
 
@@ -4342,6 +4460,7 @@ console.log('MESSAGE TYPE:', Object.keys(message.message || {}));
   PREFIX = newPrefix;
 
   saveData();
+  await saveGlobalSettingsToSupabase();
 
   await sock.sendMessage(message.key.remoteJid, {
     text: `╭━━━〔 ⚙ PREFIX UPDATED 〕━━━╮
@@ -4373,6 +4492,7 @@ New Prefix: ${PREFIX}
   PREFIX = ".";
 
   saveData();
+  await saveGlobalSettingsToSupabase();
 
   await sock.sendMessage(message.key.remoteJid, {
     text: `╭━━━〔 ⚙ PREFIX RESET 〕━━━╮
@@ -4403,6 +4523,7 @@ Current Prefix: ${PREFIX}
 
             dmBlockerEnabled = true;
             saveData();
+            await saveGlobalSettingsToSupabase();
 
             await sock.sendMessage(message.key.remoteJid, {
               text: `╭━━━〔 🚫 DM BLOCKER 〕━━━╮
@@ -4420,6 +4541,7 @@ Current Prefix: ${PREFIX}
 
             dmBlockerEnabled = false;
             saveData();
+            await saveGlobalSettingsToSupabase();
 
             await sock.sendMessage(message.key.remoteJid, {
               text: `╭━━━〔 🚫 DM BLOCKER 〕━━━╮
@@ -4481,6 +4603,7 @@ ${dmBlockerMessage}`
 
           dmBlockerMessage = newMessage;
           saveData();
+          await saveGlobalSettingsToSupabase();
 
           await sock.sendMessage(message.key.remoteJid, {
             text: `╭━━━〔 ✏️ DM BLOCK MESSAGE 〕━━━╮
@@ -8065,6 +8188,7 @@ Longest Word: "${stats.longestWord.word || 'N/A'}" (${stats.longestWord.length |
           
           sudoUsers.push(normalizedTarget);
           saveData();
+          await saveGlobalSettingsToSupabase();
           
           await sock.sendMessage(message.key.remoteJid, {
             text: `✅ @${targetNumber} is now a sudo user.`,
@@ -8113,6 +8237,7 @@ Longest Word: "${stats.longestWord.word || 'N/A'}" (${stats.longestWord.length |
           if (index > -1) {
             sudoUsers.splice(index, 1);
             saveData();
+            await saveGlobalSettingsToSupabase();
           }
           
           await sock.sendMessage(message.key.remoteJid, {
@@ -8475,6 +8600,7 @@ if (command === "setprefix") {
   PREFIX = newPrefix;
 
   saveData();
+  await saveGlobalSettingsToSupabase();
 
   await sock.sendMessage(message.key.remoteJid, {
     text: `╭━━━〔 ⚙ PREFIX UPDATED 〕━━━╮
@@ -8506,6 +8632,7 @@ New Prefix: ${PREFIX}
   PREFIX = ".";
 
   saveData();
+  await saveGlobalSettingsToSupabase();
 
   await sock.sendMessage(message.key.remoteJid, {
     text: `╭━━━〔 ⚙ PREFIX RESET 〕━━━╮
